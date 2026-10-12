@@ -1,0 +1,19 @@
+# 配置文件含 API Key，绝对不要提交
+.env
+.env.prod
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# NoneBot2
+.nonebot/
+data/
+cache/
+
+# 编辑器
+.vscode/
+.idea/
