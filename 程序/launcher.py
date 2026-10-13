@@ -49,7 +49,12 @@ from pathlib import Path
 
 # ---------------------------------------------------------------- 常量
 
-ROOT = Path(__file__).resolve().parent
+# 打包成 exe 后 __file__ 指向解包临时目录，配置/网页/NapCat 都得以 exe 所在目录为准
+ROOT = (
+    Path(sys.executable).resolve().parent
+    if getattr(sys, "frozen", False)
+    else Path(__file__).resolve().parent
+)
 VENV_DIR = ROOT / ".venv"
 ENV_FILE = ROOT / ".env"
 REQUIREMENTS = ROOT / "requirements.txt"
@@ -1131,7 +1136,11 @@ def run_pipeline(py: Path, form: dict, skip_napcat: bool = False) -> None:
             _push_log(f"端口 {port} 已被占用，可能已经有一个机器人在跑")
 
         no_proxy = {"NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"}
-        spawn("机器人核心", [str(py), "bot.py"], ROOT, no_proxy)
+        if getattr(sys, "frozen", False):
+            # 打包版没有独立的 python，用 exe 自身的 --run-bot 模式充当机器人核心
+            spawn("机器人核心", [str(py), "--run-bot"], ROOT, no_proxy)
+        else:
+            spawn("机器人核心", [str(py), "bot.py"], ROOT, no_proxy)
 
         _set(text=f"等待机器人核心就绪（127.0.0.1:{port}）…")
         if wait_port(port, 30):
@@ -1518,12 +1527,17 @@ def main() -> int:
     # 换图标这事和启动流程无关，丢后台线程，别让它挡路
     make_shortcut_async()
 
-    step(1, 4, "检查 Python 环境")
-    check_python()
+    if getattr(sys, "frozen", False):
+        # 打包版：Python 与全部依赖已内置在 exe 里，跳过环境检查与装依赖
+        ok("内置运行时就绪（打包版无需安装 Python 与依赖）")
+        py = Path(sys.executable)
+    else:
+        step(1, 4, "检查 Python 环境")
+        check_python()
 
-    step(2, 4, "准备虚拟环境与依赖")
-    py = ensure_venv()
-    ensure_deps(py)
+        step(2, 4, "准备虚拟环境与依赖")
+        py = ensure_venv()
+        ensure_deps(py)
 
     LAUNCH_PY = py
     LAUNCH_SKIP_NAPCAT = args.skip_napcat
