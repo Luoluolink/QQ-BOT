@@ -304,13 +304,14 @@ class Config(BaseModel):
     ai_linkarchive_timeout: float = 8.0
 
     # ---------- 腾讯文档同步（链接收藏的落库通道）----------
-    # 对接官方 OpenAPI（docs.qq.com/open）。三件套配置方法：
-    #   1. 去 docs.qq.com/open 注册开发者、创建应用，拿到 Client ID/Secret；
-    #   2. 按官方授权页拼授权链接，扫码后从回调里拿 code 换 token，
-    #      把 refresh_token（和 open_id）填到 .env / data/tdoc_token.json；
-    #   3. 机器人自动续期 access_token，之后 /绑定文档 或 /创建文档 即可用。
+    # 对接官方 OpenAPI（docs.qq.com/open），个人开发者直发凭证模式：
+    #   1. 去 docs.qq.com/open 注册开发者（个人即可，免费额度 20 次/分钟）；
+    #   2. 审核通过后首页「开发者信息」会直接给出三样：
+    #      client_id(应用ID)、access_token（30 天有效）、open_id；
+    #   3. 把这三样填到 .env 对应字段即可。access_token 过期后去同一页面
+    #      点「重置」生成新的，更新 .env 里的 AI_DOCS_ACCESS_TOKEN。
     # 没配置时链接收藏照常工作，只是不同步到在线文档。
     ai_docs_enabled: bool = True
     ai_docs_client_id: str = ""
-    ai_docs_client_secret: str = ""
-    ai_docs_refresh_token: str = ""
+    ai_docs_access_token: str = ""
+    ai_docs_open_id: str = ""

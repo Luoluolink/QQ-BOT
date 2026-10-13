@@ -3,13 +3,13 @@
 对接的是腾讯文档官方 OpenAPI（docs.qq.com/open，个人开发者免费额度
 20000 次/月），不是逆向接口：
 
-鉴权（OAuth2，三个 header 一起传）：
-    Access-Token: <access_token>
-    Client-Id:    <应用 client_id>
+鉴权（个人开发者直发凭证模式，docs.qq.com/open 首页直接给三样）：
+    Access-Token: <access_token，30 天有效，到期去开放平台首页点「重置」>
+    Client-Id:    <client_id / 应用ID>
     Open-Id:      <授权用户的 open_id>
-配置三件套写在 .env：AI_DOCS_CLIENT_ID / AI_DOCS_CLIENT_SECRET /
-AI_DOCS_REFRESH_TOKEN。refresh_token 是一次性扫码授权换来的长期凭证，
-本模块负责自动用它换 access_token（过期前 5 分钟续期，落盘缓存）。
+配置写在 .env：AI_DOCS_CLIENT_ID / AI_DOCS_ACCESS_TOKEN / AI_DOCS_OPEN_ID。
+access_token 是带过期时间的 JWT，本模块自动解析 exp 判断是否过期，
+过期后抛 DocsAuthError 提示重置，不做自动续期（该模式没有 refresh_token）。
 
 用到的接口：
     POST /openapi/drive/v2/files            建文档（form: title + type=doc）
@@ -33,6 +33,7 @@ AI_DOCS_REFRESH_TOKEN。refresh_token 是一次性扫码授权换来的长期凭
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import re
 import time
@@ -126,12 +127,13 @@ def _save_bindings() -> None:
 
 
 def configured() -> bool:
-    """三件套凭证是否齐了（refresh_token 可以来自 .env 或已落盘的缓存）。"""
+    """凭证是否齐了（access_token 可以来自 .env 或已落盘的缓存）。"""
     if not cfg.ai_docs_enabled:
         return False
-    if not (cfg.ai_docs_client_id and cfg.ai_docs_client_secret):
+    if not cfg.ai_docs_client_id:
         return False
-    return bool(cfg.ai_docs_refresh_token or _load_token().get("refresh_token"))
+    tok = _load_token()
+    return bool(cfg.ai_docs_access_token or tok.get("access_token"))
 
 
 def binding(gid: int) -> dict[str, Any] | None:
@@ -183,66 +185,64 @@ async def _http_json(**kwargs) -> dict:
 # ================================================================ token
 
 
-def _refresh_token_blocking() -> dict[str, Any]:
-    """用 refresh_token 换新的 access_token（官方 token 端点是 GET）。"""
-    params = {
-        "grant_type": "refresh_token",
-        "client_id": cfg.ai_docs_client_id,
-        "client_secret": cfg.ai_docs_client_secret,
-        "refresh_token": _load_token().get("refresh_token")
-        or cfg.ai_docs_refresh_token,
-    }
-    url = _OAUTH_TOKEN_URL + "?" + urllib.parse.urlencode(params)
-    return _http_json_blocking(url)
+def _jwt_exp(token: str) -> float:
+    """从 JWT 里解出 exp（解不了返回 0，视为未知、不过期拦截）。"""
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        data = json.loads(base64.urlsafe_b64decode(payload))
+        return float(data.get("exp") or 0)
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def _reset_hint() -> str:
+    return (
+        "请到 docs.qq.com/open 首页「开发者信息」里点 access_token 的「重置」"
+        "生成新 token，然后更新 .env 里的 AI_DOCS_ACCESS_TOKEN 并重启机器人"
+    )
 
 
 async def _auth_headers() -> dict[str, str]:
-    """返回带 Access-Token 的三个鉴权 header，过期自动续。"""
+    """返回三个鉴权 header。token 过期直接报错提示重置（无自动续期）。"""
     if not configured():
         raise DocsNotConfigured("腾讯文档 OpenAPI 凭证未配置")
     tok = _load_token()
-    now = time.time()
-    if not tok.get("access_token") or now >= float(tok.get("expires_at", 0)) - _EXPIRY_MARGIN:
-        try:
-            fresh = await asyncio.to_thread(_refresh_token_blocking)
-        except Exception as exc:  # noqa: BLE001
-            if not tok.get("access_token"):
-                raise DocsAuthError(f"换 token 失败: {exc!r}") from exc
-            # 有旧 token 就先用旧的（可能只是网络抖动）
-            logger.warning(f"[ai_chat] 腾讯文档续 token 失败，沿用旧 token: {exc!r}")
-        else:
-            tok.update(
-                {
-                    "access_token": fresh.get("access_token") or "",
-                    "refresh_token": fresh.get("refresh_token")
-                    or tok.get("refresh_token")
-                    or cfg.ai_docs_refresh_token,
-                    "open_id": fresh.get("open_id") or tok.get("open_id") or "",
-                    "expires_at": now + float(fresh.get("expires_in") or 7200),
-                }
-            )
-            if not tok.get("open_id"):
-                logger.warning(
-                    "[ai_chat] token 响应里没有 open_id，Open-Id header 会缺失，"
-                    "接口可能报鉴权错误——请在授权回调里把 open_id 一并保存"
-                )
-            _save_token()
+    open_id = tok.get("open_id") or cfg.ai_docs_open_id
+    if not open_id:
+        raise DocsAuthError("缺 open_id（.env 里填 AI_DOCS_OPEN_ID）")
+    # .env 里的 token 优先级更高（用户重置后会更新它）；缓存里有过期时间的兜底
+    token = cfg.ai_docs_access_token or tok.get("access_token") or ""
+    if not token:
+        raise DocsAuthError("缺 access_token，" + _reset_hint())
+    expires_at = tok.get("expires_at") or 0
+    if cfg.ai_docs_access_token and cfg.ai_docs_access_token != tok.get("access_token"):
+        # .env 换了新 token → 重新解析 exp 并落盘
+        expires_at = _jwt_exp(token)
+        tok.update({"access_token": token, "expires_at": expires_at})
+        if cfg.ai_docs_open_id:
+            tok["open_id"] = cfg.ai_docs_open_id
+        _save_token()
+    if expires_at and time.time() >= expires_at - _EXPIRY_MARGIN:
+        raise DocsAuthError(
+            f"access_token 已过期（{time.strftime('%Y-%m-%d %H:%M', time.localtime(expires_at))}），"
+            + _reset_hint()
+        )
     return {
-        "Access-Token": tok["access_token"],
+        "Access-Token": token,
         "Client-Id": cfg.ai_docs_client_id,
-        "Open-Id": tok.get("open_id") or "",
+        "Open-Id": open_id,
     }
 
 
-def set_refresh_token(token: str, open_id: str = "", access_token: str = "", expires_in: float = 7200) -> None:
-    """首次授权后把凭证写进缓存（open_id 必须保存，接口要用）。"""
+def set_access_token(token: str, open_id: str = "", expires_at: float = 0.0) -> None:
+    """把凭证写进缓存（open_id 必须保存，接口要用）。"""
     tok = _load_token()
     tok.update(
         {
-            "refresh_token": token,
+            "access_token": token,
             "open_id": open_id or tok.get("open_id") or "",
-            "access_token": access_token,
-            "expires_at": time.time() + expires_in if access_token else 0,
+            "expires_at": expires_at or _jwt_exp(token),
         }
     )
     _save_token()
@@ -490,12 +490,16 @@ async def append_entry(gid: int, title: str, url: str, by: str = "") -> str:
 def _binding_text(gid: int) -> str:
     lines = []
     if configured():
+        tok = _load_token()
+        exp = tok.get("expires_at") or 0
         lines.append("腾讯文档 API：已配置 ✅")
+        if exp:
+            lines.append(f"token 有效期至：{time.strftime('%Y-%m-%d %H:%M', time.localtime(exp))}")
     else:
         lines.append(
             "腾讯文档 API：未配置 ❌（.env 里需要 AI_DOCS_CLIENT_ID / "
-            "AI_DOCS_CLIENT_SECRET / AI_DOCS_REFRESH_TOKEN 三项，"
-            "去 docs.qq.com/open 注册应用并扫码授权）"
+            "AI_DOCS_ACCESS_TOKEN / AI_DOCS_OPEN_ID 三项，"
+            "去 docs.qq.com/open 首页「开发者信息」里复制）"
         )
     info = binding(gid)
     if info:
@@ -525,7 +529,7 @@ async def _handle_bind(bot, event: GroupMessageEvent, args: Message = CommandArg
     except DocsNotConfigured:
         await bind_doc_cmd.finish(
             "腾讯文档 API 还没配置，先在 .env 里填 AI_DOCS_CLIENT_ID / "
-            "AI_DOCS_CLIENT_SECRET / AI_DOCS_REFRESH_TOKEN"
+            "AI_DOCS_ACCESS_TOKEN / AI_DOCS_OPEN_ID（docs.qq.com/open 首页复制）"
         )
     except Exception as exc:  # noqa: BLE001
         await bind_doc_cmd.finish(f"绑定失败：{exc}")
@@ -542,7 +546,7 @@ async def _handle_create(bot, event: GroupMessageEvent, args: Message = CommandA
     except DocsNotConfigured:
         await create_doc_cmd.finish(
             "腾讯文档 API 还没配置，先在 .env 里填 AI_DOCS_CLIENT_ID / "
-            "AI_DOCS_CLIENT_SECRET / AI_DOCS_REFRESH_TOKEN"
+            "AI_DOCS_ACCESS_TOKEN / AI_DOCS_OPEN_ID（docs.qq.com/open 首页复制）"
         )
     except Exception as exc:  # noqa: BLE001
         await create_doc_cmd.finish(f"创建失败：{exc}")
