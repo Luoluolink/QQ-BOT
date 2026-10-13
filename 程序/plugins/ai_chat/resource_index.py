@@ -7,7 +7,7 @@
 
 覆盖的资源来源：
     群文件    get_group_root_files / get_group_files_by_folder（支持多层目录）
-    群相册    get_group_album_list / get_group_album_media_list（图片 + 视频）
+    群相册    get_qun_album_list / get_group_album_media_list（图片 + 视频）
 
 已知接口限制（NapCat issue #1670）：
     单个群最多只能取到 10 个相册，单个相册最多只能取到 30 个媒体，
@@ -253,7 +253,7 @@ def _media_entries(album_name: str, media_list: list) -> list[ResourceEntry]:
 
 async def _fetch_albums(bot: Bot, group_id: int, index: GroupIndex) -> None:
     try:
-        albums = await _call(bot, "get_group_album_list", group_id=group_id)
+        albums = await _call(bot, "get_qun_album_list", group_id=str(group_id))
     except Exception as exc:  # noqa: BLE001
         logger.info(f"[ai_chat] 该群没有群相册接口或读取失败，跳过: {exc}")
         return
@@ -283,7 +283,7 @@ async def _fetch_albums(bot: Bot, group_id: int, index: GroupIndex) -> None:
             data = await _call(
                 bot,
                 "get_group_album_media_list",
-                group_id=group_id,
+                group_id=str(group_id),
                 album_id=album_id,
             )
         except Exception as exc:  # noqa: BLE001

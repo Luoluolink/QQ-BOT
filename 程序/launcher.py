@@ -10,10 +10,13 @@
   4. 点「保存并启动」→ 写 .env → 准备 NapCat → 拉起两个服务 → 跳转扫码页
 
 用法：双击「启动.bat」（推荐），或在本目录执行 python launcher.py。
+      依赖装好后默认弹出内嵌桌面窗口（配置页 + 扫码 + 运行日志都在窗口里），
+      不再走浏览器；想改回浏览器模式加 --no-app。
 
 可选参数：
     --cli            不用网页，改回终端里逐项问答
     --no-browser     起了网页但不自动打开浏览器
+    --no-app         不用内嵌窗口，恢复浏览器模式
     --web-port N     指定网页端口（默认 8899，被占用会自动往后找）
     --check-only     只做环境检查与依赖安装，不启动服务
     --skip-napcat    只启动机器人核心（配合 mock_napcat.py 做无 NapCat 的测试）
@@ -26,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import ctypes
 import hashlib
 import json
 import mimetypes
@@ -49,16 +53,22 @@ from pathlib import Path
 
 # ---------------------------------------------------------------- 常量
 
-ROOT = Path(__file__).resolve().parent
+# 打包成 exe 后没有 __file__，根目录取 exe 所在位置；
+# 因此 exe 必须和 web/、requirements.txt 放在同一目录（发布包本来就如此）。
+FROZEN = getattr(sys, "frozen", False)
+ROOT = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
 VENV_DIR = ROOT / ".venv"
 ENV_FILE = ROOT / ".env"
 REQUIREMENTS = ROOT / "requirements.txt"
 DEPS_MARKER = VENV_DIR / ".deps-ok"
 WEB_DIR = ROOT / "web"
+EXE_NAME = "QQ-AI-Bot.exe"
 
-PORT_NONEBOT = 8080
-PORT_NAPCAT_WEBUI = 6099
-PORT_WEB_DEFAULT = 8899
+# 端口特意挑了冷门号段：8080/3000/5000 这类常见端口太容易被
+# 别的开发项目占用，用户跑别的程序时撞车会一脸懵。
+PORT_NONEBOT = 25301          # 机器人核心（OneBot 反向 WS + HTTP）
+PORT_NAPCAT_WEBUI = 6099      # NapCat 官方默认端口，别改（它的配置和文档都按这个来）
+PORT_WEB_DEFAULT = 27512      # 启动器网页/窗口的本地端口
 
 # NapCat 自动下载源（GitHub 官方 + 国内加速镜像）
 NAPCAT_VERSION = "v4.18.37"
@@ -375,6 +385,30 @@ def pause(text: str = "按回车键继续...") -> None:
 
 
 def check_python() -> None:
+    # exe 模式下自身不是 Python，检查系统里有没有可用的解释器
+    # （建虚拟环境、跑机器人核心都要靠它）
+    if FROZEN:
+        base = shutil.which("python") or shutil.which("python3")
+        if base is None:
+            die(
+                "exe 模式下没有找到系统 Python。\n"
+                "机器人核心需要一个 Python 来运行，请安装 Python 3.10+，\n"
+                "安装时勾选「Add Python to PATH」。"
+            )
+        try:
+            probe = subprocess.run(
+                [base, "-c", "import sys; print('%d %d' % sys.version_info[:2])"],
+                capture_output=True, text=True, timeout=20, check=False,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+            major, minor = (probe.stdout or "0 0").split()[:2]
+            if (int(major), int(minor)) < (3, 10):
+                raise ValueError(f"{major}.{minor}")
+            ok(f"Python {major}.{minor}.{sys.version_info.micro}（系统）")
+        except Exception as exc:  # noqa: BLE001
+            die(f"系统 Python 不可用或版本低于 3.10：{exc!r}")
+        return
+
     # 版本门槛和 README、启动.bat 里写的那句必须一致 ——
     # 三处说法不一样的话，用户会先按 README 装 3.9，再被这里拦下来。
     if sys.version_info < (3, 10):
@@ -415,21 +449,31 @@ BAT_NAME = "启动.bat"
 
 
 def _make_shortcut_once() -> None:
-    """实际执行快捷方式创建。任何失败都静默 —— 这是个装饰性功能。"""
+    """实际执行快捷方式创建。任何失败都静默 —— 这是个装饰性功能。
+
+    目标优先用 venv 的 pythonw（双击直接弹桌面窗口，全程没有黑框）；
+    venv 还没建（第一次用）才指向 启动.bat 弹终端装环境。
+    """
     ico = ROOT / ICON_NAME
     bat = ROOT / BAT_NAME
     lnk = ROOT / SHORTCUT_NAME
     if not ico.exists() or not bat.exists():
         return
 
-    # 写成临时 .ps1 再执行，而不是拼 -Command 字符串：
-    # 路径里可能有空格、中文甚至单引号，拼字符串迟早出事；
-    # utf-8-sig 是 Windows PowerShell 5.1 唯一可靠识别的脚本编码。
+    pyw = VENV_DIR / "Scripts" / "pythonw.exe"
+    exe = ROOT / EXE_NAME
+    if exe.exists():
+        target, args = exe, ""
+    elif pyw.exists():
+        target, args = pyw, "launcher.py"
+    else:
+        target, args = bat, ""
     script = (
         "$ErrorActionPreference = 'Stop'\n"
         "$ws = New-Object -ComObject WScript.Shell\n"
         f"$s = $ws.CreateShortcut('{lnk}')\n"
-        f"$s.TargetPath = '{bat}'\n"
+        f"$s.TargetPath = '{target}'\n"
+        f"$s.Arguments = '{args}'\n"
         f"$s.IconLocation = '{ico},0'\n"
         f"$s.WorkingDirectory = '{ROOT}'\n"
         "$s.Description = 'QQ AI Bot 启动器'\n"
@@ -492,9 +536,20 @@ def ensure_venv() -> Path:
 
     with Spinner("正在创建虚拟环境…"):
         try:
-            import venv
+            if FROZEN:
+                # exe 里没有可用的 Python 解释器，借系统的来建
+                base = shutil.which("python") or shutil.which("python3")
+                if base is None:
+                    die("没有找到系统 Python，无法创建虚拟环境")
+                subprocess.run(
+                    [base, "-m", "venv", str(VENV_DIR)],
+                    check=True, timeout=300,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                )
+            else:
+                import venv
 
-            venv.EnvBuilder(with_pip=True, clear=False).create(str(VENV_DIR))
+                venv.EnvBuilder(with_pip=True, clear=False).create(str(VENV_DIR))
         except Exception as exc:  # noqa: BLE001
             die(f"创建虚拟环境失败：{exc!r}")
 
@@ -844,7 +899,317 @@ def write_napcat_config(napcat_dir: Path, env: dict, qq: str = "") -> str:
     return f"http://127.0.0.1:{webui.get('port')}/webui?token={webui.get('token')}"
 
 
+# ---- NapCat WebUI 登录接口（供网页内嵌二维码用）----
+#
+# 我们自己的网页要展示扫码二维码，需要以「浏览器 → 启动器 → NapCat WebUI」
+# 的方式代理三件事：登录换凭据、拿二维码、查登录状态。浏览器不直接碰
+# NapCat，凭据只留在启动器进程里。接口契约对齐 NapCat v4.18 的 WebUI 后端：
+#   POST /api/auth/login            body {"hash": sha256(token + ".napcat")} → data.Credential
+#   POST /api/QQLogin/GetQQLoginQrcode / RefreshQRcode / CheckLoginStatus
+# loginPhase 取值：waiting_qrcode / generating_qrcode / qrcode_scanned /
+#                  initializing / ready / offline / reconnecting
+
+QR_POLL_TIMEOUT = 8
+
+
+def _napcat_webui_post(path: str, payload: dict, credential: str = "") -> tuple[dict | None, str]:
+    """调一次 NapCat WebUI 接口，返回 (响应 JSON, 错误信息)。"""
+    url = f"http://127.0.0.1:{PORT_NAPCAT_WEBUI}{path}"
+    headers = {"Content-Type": "application/json"}
+    if credential:
+        headers["Authorization"] = f"Bearer {credential}"
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST"
+    )
+    # 本机回环不该走系统代理，显式清掉
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(req, timeout=QR_POLL_TIMEOUT) as resp:
+            body = json.loads(resp.read().decode("utf-8", "replace"))
+            return (body if isinstance(body, dict) else {}), ""
+    except urllib.error.HTTPError as exc:
+        try:
+            body = json.loads(exc.read().decode("utf-8", "replace"))
+        except Exception:  # noqa: BLE001
+            body = None
+        msg = body.get("message") if isinstance(body, dict) else ""
+        return (body if isinstance(body, dict) else None), str(msg or f"HTTP {exc.code}")
+    except Exception as exc:  # noqa: BLE001
+        return None, str(exc)
+
+
+def napcat_webui_credential(token: str) -> str:
+    """用 webui.json 里的 token 换登录凭据（SHA256(token + '.napcat')）。"""
+    if not token:
+        return ""
+    digest = hashlib.sha256(f"{token}.napcat".encode("utf-8")).hexdigest()
+    body, _ = _napcat_webui_post("/api/auth/login", {"hash": digest, "totpCode": ""})
+    if not body or body.get("code") not in (0, None):
+        return ""
+    cred = (body.get("data") or {}).get("Credential") or ""
+    return cred if isinstance(cred, str) else ""
+
+
+def qr_login_status() -> dict:
+    """网页轮询入口：返回登录状态 + 当前二维码 URL（凭据过期自动重登一次）。"""
+    with STATE_LOCK:
+        token = STATE.get("token", "")
+        cred = STATE.get("cred", "")
+    if not token:
+        return {"ok": False, "error": "NapCat 还没启动完成"}
+
+    def _status(cred_: str) -> tuple[dict | None, str]:
+        body, err = _napcat_webui_post(
+            "/api/QQLogin/CheckLoginStatus", {}, cred_)
+        if body is not None and body.get("code") not in (0, None):
+            return None, str(body.get("message") or "NapCat 返回了错误")
+        return body, err
+
+    body, err = _status(cred)
+    if body is None:
+        # 凭据可能过期（NapCat 重启后 JWT 失效），重新换一次再试
+        cred = napcat_webui_credential(token)
+        if not cred:
+            return {"ok": False, "error": "连不上 NapCat，稍等几秒再试"}
+        body, err = _status(cred)
+        if body is None:
+            return {"ok": False, "error": err or "NapCat 暂时没有响应"}
+    _set(cred=cred)
+
+    data = body.get("data") or {}
+    if not isinstance(data, dict):
+        data = {}
+    return {
+        "ok": True,
+        "isLogin": bool(data.get("isLogin")),
+        "qrLoginAccepted": bool(data.get("qrLoginAccepted")),
+        "phase": data.get("loginPhase") or "",
+        "qrcodeurl": data.get("qrcodeurl") or "",
+        "loginError": data.get("loginError") or "",
+    }
+
+
+def qr_refresh() -> dict:
+    """强制刷新二维码。"""
+    with STATE_LOCK:
+        token = STATE.get("token", "")
+        cred = STATE.get("cred", "")
+    if not token:
+        return {"ok": False, "error": "NapCat 还没启动完成"}
+    if not cred:
+        cred = napcat_webui_credential(token)
+        if not cred:
+            return {"ok": False, "error": "连不上 NapCat，稍等几秒再试"}
+    body, err = _napcat_webui_post("/api/QQLogin/RefreshQRcode", {}, cred)
+    if body is None:
+        return {"ok": False, "error": err or "刷新失败"}
+    if body.get("code") not in (0, None):
+        return {"ok": False, "error": str(body.get("message") or "刷新失败")}
+    data = body.get("data") or {}
+    if not isinstance(data, dict):
+        data = {}
+    _set(cred=cred)
+    return {"ok": True, "qrcodeurl": data.get("qrcodeurl") or "",
+            "restarting": bool(data.get("restarting"))}
+
+
 # ---------------------------------------------------------------- 进程与端口
+
+# 窗口模式（--app-child）：服务输出进日志文件、网页内嵌「运行日志」、
+# 用 pywebview 开原生窗口而不是浏览器。
+APP_MODE = False
+LOG_DIR = ROOT / "logs"
+_LOG_HANDLES: list = []
+
+
+def console_tail() -> dict:
+    """读两个服务日志的末尾，拼给网页的「运行日志」面板。"""
+    out: list[str] = []
+    for label, name in (("核心", "bot.log"), ("NapCat", "napcat.log")):
+        path = LOG_DIR / name
+        if not path.exists():
+            continue
+        try:
+            with path.open("rb") as fh:
+                fh.seek(0, 2)
+                size = fh.tell()
+                fh.seek(max(0, size - 65536))   # 只读末尾 64KB，日志再大也不卡
+                data = fh.read()
+            text = data.decode("utf-8", "replace")
+            lines = [f"[{label}] {ln}" for ln in text.splitlines() if ln.strip()]
+            out.extend(lines[-160:])
+        except OSError:
+            continue
+    return {"ok": True, "lines": out[-300:]}
+
+
+def _webview_available(py: Path) -> bool:
+    """检查 venv 里能不能 import webview。"""
+    try:
+        probe = subprocess.run(
+            [str(py), "-c", "import webview"],
+            capture_output=True, timeout=60,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        return probe.returncode == 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def run_app_window(port: int) -> int:
+    """用 pywebview 开原生窗口加载网页（阻塞到窗口关闭）。"""
+    url = f"http://127.0.0.1:{port}/"
+    ico = ROOT / "launcher.ico"
+
+    class _WindowBridge:
+        """暴露给网页的自定义标题栏按钮：最小化 / 最大化 / 关闭。"""
+
+        @staticmethod
+        def _post_to_ui(native, fn) -> bool:
+            """把窗体操作 marshal 到 UI 线程执行。
+
+            js_api 在后台线程被调用，而 WinForms 的 WindowState 等属性
+            只能在 UI 线程读写，跨线程直接操作会死锁（窗口失去响应）。
+            BeginInvoke 异步投递，不阻塞调用线程。
+            """
+            try:
+                from System import Action  # noqa: PLC0415
+
+                native.BeginInvoke(Action(fn))
+                return True
+            except Exception as exc:  # noqa: BLE001
+                warn(f"投递 UI 线程失败: {exc!r}")
+                return False
+
+        @staticmethod
+        def _get_native():
+            try:
+                return webview.windows[0].native
+            except Exception:  # noqa: BLE001
+                return None
+
+        def minimize(self) -> None:
+            import clr  # noqa: PLC0415
+
+            clr.AddReference("System.Windows.Forms")
+            from System.Windows.Forms import FormWindowState  # noqa: PLC0415
+
+            native = self._get_native()
+            if native is None:
+                return
+
+            def _do() -> None:
+                native.WindowState = FormWindowState.Minimized
+
+            self._post_to_ui(native, _do)
+
+        def toggle_maximize(self) -> None:
+            import clr  # noqa: PLC0415
+
+            clr.AddReference("System.Windows.Forms")
+            from System.Windows.Forms import FormWindowState  # noqa: PLC0415
+
+            native = self._get_native()
+            if native is None:
+                return
+
+            def _do() -> None:
+                # 读和写都在 UI 线程内完成，线程安全
+                state = native.WindowState
+                native.WindowState = (
+                    FormWindowState.Normal
+                    if state == FormWindowState.Maximized
+                    else FormWindowState.Maximized
+                )
+
+            self._post_to_ui(native, _do)
+
+        def close(self) -> None:
+            try:
+                webview.windows[0].destroy()
+            except Exception:  # noqa: BLE001
+                pass
+
+    try:
+        import webview  # noqa: PLC0415
+    except ImportError as exc:
+        warn(f"pywebview 没装上（{exc}），退回浏览器模式")
+        try:
+            webbrowser.open(url)
+        except Exception:  # noqa: BLE001
+            pass
+        # 没有窗口就得有人守着服务，走原来的主循环逻辑由调用方兜底
+        return 1
+
+    window = webview.create_window(
+        "QQ 群 AI 机器人",
+        url,
+        width=1120, height=800,
+        min_size=(900, 640),
+        background_color="#150e14",   # 和页面背景同色，避免加载瞬间闪白条
+        frameless=True,               # 无边框：标题栏由网页自己画（页签嵌进去）
+        easy_drag=False,              # 拖拽交给页面里的 .pywebview-drag-region
+        js_api=_WindowBridge(),
+    )
+
+    def _set_icon() -> None:
+        """窗口起来后把图标换成 launcher.ico（仅 Windows/WinForms 后端）。
+
+        两步走：Form.Icon 管标题栏，WM_SETICON 管任务栏；
+        pythonnet 引用 System.Drawing 必须先 AddReference，否则 import 静默失败。
+        """
+        if os.name != "nt" or not ico.exists():
+            return
+        for _ in range(20):   # native 句柄要等窗口真正创建，重试几秒
+            native = getattr(window, "native", None)
+            if native is None:
+                time.sleep(0.5)
+                continue
+            try:
+                import clr  # noqa: PLC0415  (pythonnet，pywebview 自带依赖)
+
+                clr.AddReference("System.Drawing")
+                from System.Drawing import Icon  # noqa: PLC0415
+
+                icon = Icon(str(ico))
+                native.Icon = icon
+                # 新版 pythonnet 的 IntPtr 不能直接 int()，要走 ToInt64()
+                hwnd = int(native.Handle.ToInt64())
+                hicon = int(icon.Handle.ToInt64())
+                user32 = ctypes.windll.user32
+                # 1) 窗口消息图标：标题栏 + 一般情况下的任务栏
+                user32.SendMessageW(hwnd, 0x0080, 1, hicon)   # WM_SETICON ICON_BIG
+                user32.SendMessageW(hwnd, 0x0080, 0, hicon)   # WM_SETICON ICON_SMALL
+                # 2) 窗口类图标：任务栏（尤其 Win11 分组时）读的是这个，
+                #    只改 Form.Icon 改不到它，必须 SetClassLongPtrW
+                user32.SetClassLongPtrW(hwnd, -14, hicon)     # GCLP_HICON
+                user32.SetClassLongPtrW(hwnd, -34, hicon)     # GCLP_HICONSM
+
+                # 3) 深色标题栏/边框：系统浅色模式下窗口边框会发白
+                for attr in (20, 19):   # DWMWA_USE_IMMERSIVE_DARK_MODE 新旧版本取值
+                    truthy = ctypes.c_int(1)
+                    if ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                        hwnd, attr, ctypes.byref(truthy), 4
+                    ) == 0:
+                        break
+
+                # 4) 窗体底色：WebView2 覆盖不到的缝隙露出 Form 默认灰白
+                from System.Drawing import ColorTranslator  # noqa: PLC0415
+                native.BackColor = ColorTranslator.FromHtml("#150e14")
+                return
+            except Exception:  # noqa: BLE001
+                time.sleep(0.5)
+
+    try:
+        webview.start(_set_icon)
+    except Exception as exc:  # noqa: BLE001
+        warn(f"内嵌窗口启动失败（{exc}），退回浏览器模式")
+        try:
+            webbrowser.open(url)
+        except Exception:  # noqa: BLE001
+            pass
+        return 1
+    return 0
 
 
 def port_in_use(port: int) -> bool:
@@ -862,13 +1227,28 @@ def free_port(start: int) -> int:
 
 
 def spawn(title: str, cmd: list[str], cwd: Path, extra_env: dict | None = None) -> subprocess.Popen:
-    """新开一个控制台窗口运行命令，方便用户看到日志与二维码。"""
+    """启动一个服务进程。
+
+    终端模式：新开控制台窗口（和现在一样，日志在各自窗口里）。
+    窗口模式（APP_MODE）：不弹窗口，输出重定向到 logs/*.log，
+    网页里的「运行日志」面板会实时读取这些文件；这样关掉启动器窗口
+    机器人也照常运行。
+    """
     env = os.environ.copy()
     if extra_env:
         env.update(extra_env)
     kwargs: dict = {"cwd": str(cwd), "env": env}
     if os.name == "nt":
-        kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE
+        if APP_MODE:
+            LOG_DIR.mkdir(exist_ok=True)
+            name = "napcat" if "NapCat" in title else "bot"
+            handle = (LOG_DIR / f"{name}.log").open("ab")
+            _LOG_HANDLES.append(handle)   # 防止 GC 把文件句柄关掉
+            kwargs["stdout"] = handle
+            kwargs["stderr"] = subprocess.STDOUT
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        else:
+            kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE
     proc = subprocess.Popen(cmd, **kwargs)
     ok(f"已启动「{c(C.light)}{title}{c(C.reset)}」（PID {c(C.gray)}{proc.pid}{c(C.reset)}）")
     return proc
@@ -896,6 +1276,8 @@ STATE: dict = {
     "text": "等待填写…",
     "log": [],
     "webui": "",
+    "token": "",
+    "cred": "",
     "message": "",
     "error": "",
 }
@@ -1112,7 +1494,9 @@ def run_pipeline(py: Path, form: dict, skip_napcat: bool = False) -> None:
             step=4,
             text="全部就绪",
             webui=webui,
-            message="在打开的 NapCat 页面里扫码登录，登录完机器人就能在群里说话了。",
+            token=webui.split("token=")[-1] if "token=" in webui else "",
+            cred="",
+            message="用手机 QQ 扫描下面的二维码登录；登录完成后机器人就上线了。",
         )
 
     except Exception as exc:  # noqa: BLE001
@@ -1209,6 +1593,18 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._json(dict(STATE))
             return
 
+        if path == "/api/qr/poll":
+            self._json(qr_login_status())
+            return
+
+        if path == "/api/qr/refresh":
+            self._json(qr_refresh())
+            return
+
+        if path == "/api/console":
+            self._json(console_tail())
+            return
+
         if path in ("/", "/index.html"):
             path = "/index.html"
 
@@ -1268,7 +1664,8 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": "接口地址要以 http:// 或 https:// 开头"})
                 return
 
-            _set(state="running", step=0, text="正在启动…", log=[], error="", message="", webui="")
+            _set(state="running", step=0, text="正在启动…", log=[], error="", message="",
+                 webui="", token="", cred="")
             threading.Thread(
                 target=run_pipeline,
                 args=(LAUNCH_PY, form, LAUNCH_SKIP_NAPCAT),
@@ -1407,7 +1804,7 @@ def summary(env: dict, webui: str, napcat_ready: bool) -> None:
     blank()
     print(f"  {c(C.bold)}{c(C.light)}接下来{c(C.reset)}")
     rule()
-    info(f"{c(C.cyan)}1{c(C.reset)}  在 NapCat 页面里用手机 QQ 扫码并确认登录")
+    info(f"{c(C.cyan)}1{c(C.reset)}  回到浏览器的启动器网页，用手机 QQ 扫码并确认登录")
     info(f"    {c(C.gray)}二维码约 2 分钟过期，过期了在页面里点刷新{c(C.reset)}")
     info(f"{c(C.cyan)}2{c(C.reset)}  把机器人拉进一个群，在群里 @ 它说话试试")
     info(f"{c(C.cyan)}3{c(C.reset)}  问它「群里有没有 XX」，它会去翻群文件和群相册")
@@ -1441,7 +1838,18 @@ def main() -> int:
     parser.add_argument("--web-port", type=int, default=PORT_WEB_DEFAULT, help="网页端口")
     parser.add_argument("--check-only", action="store_true", help="只检查环境与依赖，不启动")
     parser.add_argument("--skip-napcat", action="store_true", help="只启动机器人核心")
+    parser.add_argument(
+        "--no-app", action="store_true",
+        help="不开内嵌窗口，恢复以前的浏览器模式",
+    )
+    parser.add_argument(
+        "--app-child", action="store_true", help=argparse.SUPPRESS,
+    )   # 内部参数：父进程装好依赖后，用 venv 的 pythonw 重新拉起自己
     args = parser.parse_args()
+
+    global APP_MODE
+    if args.app_child:
+        APP_MODE = True
 
     if os.name == "nt":
         try:
@@ -1453,6 +1861,18 @@ def main() -> int:
         print("\033]0;QQ AI Bot\007", end="")
 
     banner()
+
+    # 无终端模式（pythonw 双击启动）：环境还没就绪时改弹终端装环境，
+    # 否则第一次要下载依赖好几分钟，用户看着什么都没发生会以为坏了。
+    headless = os.name == "nt" and sys.stdout is None
+    env_not_ready = not (VENV_DIR / "Scripts" / "python.exe").exists() or not DEPS_MARKER.exists()
+    if headless and env_not_ready and not args.app_child and not args.check_only:
+        subprocess.Popen(
+            ["cmd", "/c", str(ROOT / BAT_NAME)],
+            cwd=str(ROOT),
+            creationflags=subprocess.CREATE_NEW_CONSOLE,
+        )
+        return 0
 
     # 换图标这事和启动流程无关，丢后台线程，别让它挡路
     make_shortcut_async()
@@ -1492,6 +1912,36 @@ def main() -> int:
     if port != args.web_port:
         hint(f"端口 {args.web_port} 被占用，改用 {port}")
 
+    # ---- 内嵌窗口模式：exe 自身就是窗口程序，直接开窗口
+    if args.app_child or (FROZEN and not args.no_app and not args.check_only):
+        APP_MODE = True   # main() 开头已声明 global
+        start_web(port, open_browser=False)
+        rc = run_app_window(port)
+        if rc != 0:
+            # 窗口没起来，但服务已在：退回浏览器模式，守着服务别退出
+            hint("窗口模式不可用，已退回浏览器模式。")
+            try:
+                while True:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                pass
+        return rc
+
+    if not FROZEN and not args.no_app and not args.check_only:
+        pyw = py.with_name("pythonw.exe")
+        if _webview_available(py) and pyw.exists():
+            hint("准备打开内嵌窗口…")
+            subprocess.Popen(
+                [str(pyw), str(Path(__file__).resolve()),
+                 "--app-child", "--web-port", str(port)],
+                cwd=str(ROOT),
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+            blank()
+            ok("窗口模式已启动，本窗口可以关掉了")
+            return 0
+        warn("内嵌窗口组件不可用，继续用浏览器模式（加 --no-app 可跳过此检查）")
+
     start_web(port, open_browser=not args.no_browser)
 
     print(f"  {c(C.gray)}这个窗口先别关 —— 机器人核心和 NapCat 的日志在它们各自的窗口里。{c(C.reset)}")
@@ -1528,13 +1978,8 @@ def main() -> int:
 
             if webui:
                 blank()
-                print(f"  {c(C.bold)}{c(C.light)}扫码地址{c(C.reset)}")
+                print(f"  {c(C.bold)}{c(C.light)}扫码地址（网页里已内嵌二维码）{c(C.reset)}")
                 link(webui)
-                try:
-                    webbrowser.open(webui)
-                    ok("已尝试打开扫码页面")
-                except Exception:  # noqa: BLE001
-                    pass
 
             blank()
             info(f"{c(C.gray)}本窗口可以最小化，但别关 —— 关掉网页就访问不到了。{c(C.reset)}")
@@ -1557,3 +2002,15 @@ if __name__ == "__main__":
         blank()
         print(f"  {c(C.yellow)}已取消。{c(C.reset)}")
         sys.exit(130)
+    except Exception:
+        # pythonw 没有终端，崩了也要让人看见原因
+        if sys.stdout is None and os.name == "nt":
+            import traceback
+
+            ctypes.windll.user32.MessageBoxW(
+                0,
+                "启动器出错了：\n\n" + traceback.format_exc()[-1200:],
+                "QQ AI Bot 启动失败",
+                0x10,
+            )
+        raise

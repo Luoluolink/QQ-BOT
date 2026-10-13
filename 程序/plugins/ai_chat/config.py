@@ -48,6 +48,21 @@ class Config(BaseModel):
     # 到第二天零点自动恢复。设为 0 = 完全不允许联网。
     ai_web_search_daily_limit: int = 30
 
+    # ---------- 网页爬虫 ----------
+    # 三种用法：用户发链接 → 抓正文总结；「去b站找xx视频」→ 搜B站返回链接；
+    # 「去github找xx项目」→ 搜GitHub返回链接。
+    # 纯标准库实现（urllib），不走模型的联网插件，不产生额外费用。
+    ai_crawler_enabled: bool = True
+    # 每次搜索最多返回几条结果
+    ai_crawler_max_results: int = 3
+    # 单个网页最多抓多少字交给模型（太长会挤占上下文）
+    ai_crawler_page_max_chars: int = 3500
+    # 网页下载超时（秒）
+    ai_crawler_timeout: float = 15.0
+    # YouTube 搜索走的本机代理（国内直连不了 YouTube）。
+    # 代理没在运行时 YouTube 搜索会失败并如实告知，不影响 B站/GitHub。
+    ai_crawler_youtube_proxy: str = "http://127.0.0.1:7890"
+
     # ---------- 机器人身份 ----------
     # 机器人的名字。会被拼进系统提示词，让模型知道自己叫什么。
     # 启动器的网页里填的就是这一项。
@@ -190,6 +205,20 @@ class Config(BaseModel):
     ai_filetext_chunk_size: int = 450
     # 单文件下载超时（秒）
     ai_filetext_timeout: float = 20.0
+
+    # ---------- 群相册 ----------
+    # @机器人 + 图片 + 文字带「存/收/相册」→ 把图存进群相册（NapCat 扩展接口）。
+    # 注意：识图也是 @+图片，所以必须带意图词；不带意图词的图仍走识图对话。
+    ai_album_enabled: bool = True
+    # 每个群每天最多存几张（防刷屏，群相册本身也有容量限制）
+    ai_album_daily_limit: int = 20
+    # 一条消息最多存几张图
+    ai_album_max_images: int = 3
+
+    # ---------- 点歌 ----------
+    # @机器人 + 「来首/点歌/放一首/听一首 歌名」→ 分享网易云音乐卡片（OneBot music 段）。
+    # 用网易云是因为它的搜索接口公开无签名；卡片样式由 NapCat 渲染成官方分享卡片。
+    ai_music_enabled: bool = True
 
     # ---------- 私聊 ----------
     # 私聊也走 AI 对话（没有群资源检索，纯聊天 + 识图 + 联网）

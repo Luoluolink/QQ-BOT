@@ -1,0 +1,8 @@
+#!/bin/bash
+LOG_DIR="/Users/luoluolink/WorkBuddy/2026-10-11-20-57-49/qq-ai-bot/QQ-AI-Bot-Mac/logs"
+mkdir -p "$LOG_DIR"
+export NAPCAT_LOAD=1
+# BOT_QQ_NUM 改成你要登录的 QQ 号（留空则弹出扫码）
+BOT_QQ_NUM="${BOT_QQ_NUM:-10000}"   # ← 占位号，发布仓库用
+
+exec '/Applications/QQ.app/Contents/MacOS/QQ' --no-sandbox -q "$BOT_QQ_NUM" >> "$LOG_DIR/napcat.log" 2>> "$LOG_DIR/napcat.err.log"

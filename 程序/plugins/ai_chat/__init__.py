@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import random
+import re
 import time
 from collections import defaultdict, deque
 from datetime import date
@@ -39,11 +40,13 @@ from nonebot.adapters.onebot.v11 import (
 )
 from nonebot.params import CommandArg
 from nonebot.plugin import PluginMetadata
-from nonebot.rule import to_me
+from nonebot.rule import Rule, to_me
 from openai import AsyncOpenAI
 
 from . import (
     admin,
+    album,
+    crawler,
     essence,
     filetext,
     forward,
@@ -51,6 +54,7 @@ from . import (
     interact,
     media,
     members,
+    music,
     resource_index,
     stickers,
     tools,
@@ -68,6 +72,7 @@ __plugin_meta__ = PluginMetadata(
         "支持识别群友发来的图片（需模型本身是多模态的），"
         "支持识别被 @ 或被提到的群成员，"
         "可选联网搜索获取实时信息（带每日额度限制），"
+        "支持点歌分享（网易云音乐卡片），"
         "新成员入群时自动欢迎。"
     ),
     usage=(
@@ -85,6 +90,7 @@ __plugin_meta__ = PluginMetadata(
         "/成员 refresh —— 重建成员名单（限群主与管理员）\n"
         "/search —— 查看今日联网额度用量\n"
         "/search reset —— 重置今日联网额度（限群主与管理员）\n"
+        "@机器人 来首晴天 / 点歌 歌名 —— 分享音乐卡片到群里\n"
         "/history 关键词 —— 检索最近谁说过什么\n"
         "/history recent —— 看最近 10 条消息\n"
         "/转文字 —— 回复语音消息，识别语音内容（QQ 官方能力，免费）\n"
@@ -398,6 +404,22 @@ async def _build_essence_context(bot: Bot, group_id: int, text: str) -> str:
     )
 
 
+async def _build_crawler_context(bot: Bot, group_id: int, text: str) -> str:
+    """网页爬虫：用户丢链接就抓正文总结；「去b站/github找xx」就先搜再给链接。
+
+    挂进 _build_context 的检索循环，和其他资料段一样失败自动降级。
+    """
+    if not cfg.ai_crawler_enabled:
+        return ""
+    return await crawler.build_context(
+        text,
+        max_results=cfg.ai_crawler_max_results,
+        page_chars=cfg.ai_crawler_page_max_chars,
+        timeout=cfg.ai_crawler_timeout,
+        youtube_proxy=cfg.ai_crawler_youtube_proxy,
+    )
+
+
 async def _build_context(
     bot: Bot, group_id: int, text: str, at_qqs: list[int], self_id: int
 ) -> str:
@@ -417,7 +439,11 @@ async def _build_context(
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[ai_chat] 群成员识别失败: {exc!r}")
 
-    for builder in (_build_resource_context, _build_essence_context):
+    for builder in (
+        _build_resource_context,
+        _build_essence_context,
+        _build_crawler_context,
+    ):
         try:
             block = await builder(bot, group_id, text)
         except Exception as exc:  # noqa: BLE001
@@ -593,6 +619,75 @@ async def _complete_with_images(
             raise retry_exc
 
 
+# ---------------------------------------------------------------- 风控拦截
+# 有些接口被内容风控命中时不报异常，而是正常返回、正文直接是一句拒绝
+# 文案（实测：「The request was rejected because it was considered high
+# risk」）。原样发到群里既是英文报错、又会让「搜索结果出不来」，这里
+# 识别出来后按「原样重试 → 去掉检索资料重试」的顺序自救。
+_RISK_REJECT_PAT = re.compile(
+    r"high\s*risk"
+    r"|was\s+rejected"
+    r"|content\s+(?:policy|filter|moderation)"
+    r"|(?:内容)?风控"
+    r"|敏感内容"
+    r"|违规内容",
+    re.IGNORECASE,
+)
+
+
+def _looks_rejected(reply: str) -> bool:
+    """识别「风控拒绝文案」。限长是为了不误杀正常引用这些词的长回复。"""
+    return 0 < len(reply) < 120 and bool(_RISK_REJECT_PAT.search(reply))
+
+
+async def _complete_with_reject_retry(
+    bot: Bot,
+    messages: list[dict],
+    text: str,
+    images: list[dict],
+    allow_search: bool,
+    drop_content: str = "",
+):
+    """调用模型并对风控拒绝做两段重试。
+
+    第一步：原样重试一次 —— 风控大多是概率性拦截，同样的请求再发
+    一次常就过了。第二步：仍被拦且调用方给了 drop_content（爬虫检索
+    资料段）就去掉它再试 —— 资料里的视频标题/简介是最常见的触发源，
+    去掉后至少能正常对话。全部被拦返回 None，由调用方决定兜底话术。
+    """
+    resp = await _complete_with_images(
+        bot, messages, text, images, allow_search=allow_search
+    )
+    reply = (resp.choices[0].message.content or "").strip()
+    if not _looks_rejected(reply):
+        return resp
+
+    logger.warning(f"[ai_chat] 回复疑似风控文案，原样重试一次: {reply[:80]!r}")
+    resp = await _complete_with_images(
+        bot, messages, text, images, allow_search=allow_search
+    )
+    reply = (resp.choices[0].message.content or "").strip()
+    if not _looks_rejected(reply):
+        return resp
+
+    if drop_content:
+        logger.warning("[ai_chat] 仍被拦截，去掉检索资料后再试一次")
+        retry_messages = [
+            m
+            for m in messages
+            if not (m.get("role") == "system" and m.get("content") == drop_content)
+        ]
+        resp = await _complete_with_images(
+            bot, retry_messages, text, images, allow_search=allow_search
+        )
+        reply = (resp.choices[0].message.content or "").strip()
+        if not _looks_rejected(reply):
+            return resp
+
+    logger.warning("[ai_chat] 风控重试全部失败，改用兜底话术")
+    return None
+
+
 def _maybe_sticker(text: str) -> Path | None:
     """决定这次要不要附带表情包。"""
     if not cfg.ai_sticker_enabled:
@@ -621,7 +716,12 @@ def _speaker_label(event: GroupMessageEvent) -> str:
     return name
 
 
-chat = on_message(rule=to_me(), priority=50, block=False)
+def _chat_rule(bot: Bot, event: Event) -> bool:
+    """@ 机器人在任意位置都算（适配器只认开头/结尾，图片打头时 @ 在中间会漏）。"""
+    return tools.at_me(event, bot.self_id)
+
+
+chat = on_message(rule=Rule(_chat_rule), priority=50, block=False)
 
 
 @chat.handle()
@@ -699,12 +799,21 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
     )
 
     try:
-        resp = await _complete_with_images(
-            bot, messages, text, images, allow_search=allow_search
+        resp = await _complete_with_reject_retry(
+            bot,
+            messages,
+            text,
+            images,
+            allow_search=allow_search,
+            drop_content=context,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[ai_chat] 调用模型失败: {exc!r}")
         await chat.finish("模型那边好像出问题了，稍后再试试～")
+
+    if resp is None:
+        # 风控重试全失败：不把英文拒绝文案丢群里，也不写进历史污染上下文
+        await chat.finish("这条触发了上游内容风控，我答不了，换个问法试试～")
 
     reply = (resp.choices[0].message.content or "").strip()
     if not reply:
@@ -730,14 +839,27 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
     segments: list = []
     if cfg.ai_reply_quote:
         segments.append(MessageSegment.reply(event.message_id))
-    segments.append(MessageSegment.text(reply))
+    # 链接转卡片：回复里的 B 站/网页链接自动变成分享卡片，失败退回纯文本
+    segments.extend(await crawler.linkify(reply, proxy=cfg.ai_crawler_youtube_proxy))
 
     sticker = _maybe_sticker(text)
     if sticker is not None:
         # 用 file:// URI 而不是裸路径：CQ 码里反斜杠是转义符，Windows 路径会解析出错
         segments.append(MessageSegment.image(sticker.as_uri()))
 
-    await chat.finish(Message(segments))
+    try:
+        # 先直接 send：卡片段（share）个别 NapCat 版本可能不支持，
+        # 失败就撤掉卡片退回纯文本重发，不能让整条回复消失
+        await bot.send(event, Message(segments))
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[ai_chat] 带卡片发送失败，退回纯文本: {exc!r}")
+
+    fallback: list = []
+    if cfg.ai_reply_quote:
+        fallback.append(MessageSegment.reply(event.message_id))
+    fallback.append(MessageSegment.text(reply))
+    await chat.finish(Message(fallback))
 
 
 files_cmd = on_command("files", aliases={"文件", "资源"}, priority=10, block=True)
@@ -1188,7 +1310,12 @@ _private_history: DefaultDict[int, Deque[dict]] = defaultdict(
 _private_last: Dict[int, float] = {}
 _private_usage: DefaultDict[int, int] = defaultdict(int)
 
-private_chat = on_message(rule=to_me(), priority=50, block=False)
+def _private_chat_rule(bot: Bot, event: Event) -> bool:
+    """@ 机器人在任意位置都算（适配器只认开头/结尾，图片打头时 @ 在中间会漏）。"""
+    return tools.at_me(event, bot.self_id)
+
+
+private_chat = on_message(rule=Rule(_private_chat_rule), priority=50, block=False)
 
 
 @private_chat.handle()
@@ -1243,12 +1370,15 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
     )
 
     try:
-        resp = await _complete_with_images(
+        resp = await _complete_with_reject_retry(
             bot, messages, text, images, allow_search=allow_search
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[ai_chat] 私聊调用模型失败: {exc!r}")
         await private_chat.finish("模型那边好像出问题了，稍后再试试～")
+
+    if resp is None:
+        await private_chat.finish("这条触发了上游内容风控，我答不了，换个问法试试～")
 
     reply = (resp.choices[0].message.content or "").strip()
     if not reply:
@@ -1262,10 +1392,20 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
     segments: list = []
     if cfg.ai_reply_quote:
         segments.append(MessageSegment.reply(event.message_id))
-    segments.append(MessageSegment.text(reply))
+    # 链接转卡片：回复里的 B 站/网页链接自动变成分享卡片，失败退回纯文本
+    segments.extend(await crawler.linkify(reply, proxy=cfg.ai_crawler_youtube_proxy))
 
     sticker = _maybe_sticker(text)
     if sticker is not None:
         segments.append(MessageSegment.image(sticker.as_uri()))
 
-    await private_chat.finish(Message(segments))
+    try:
+        await bot.send(event, Message(segments))
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[ai_chat] 带卡片发送失败，退回纯文本: {exc!r}")
+
+    fallback: list = [MessageSegment.text(reply)]
+    if cfg.ai_reply_quote:
+        fallback.insert(0, MessageSegment.reply(event.message_id))
+    await private_chat.finish(Message(fallback))

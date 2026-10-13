@@ -139,3 +139,19 @@ EMOJI_ALIASES: dict[str, str] = {
     "纪念": "🎉",
     "庆祝": "🎉",
 }
+
+
+def at_me(event: Event, self_id: str | int) -> bool:
+    """@ 机器人在消息**任意位置**都算 to_me（适配器只认开头/结尾）。"""
+    try:
+        from nonebot.adapters.onebot.v11 import MessageEvent
+    except ImportError:
+        return False
+    if not isinstance(event, MessageEvent):
+        return False
+    if getattr(event, "to_me", False):
+        return True
+    return any(
+        seg.type == "at" and str(seg.data.get("qq", "")) == str(self_id)
+        for seg in event.message
+    )

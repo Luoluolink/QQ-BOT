@@ -1,0 +1,1468 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QQ 群 AI 机器人 · 配置</title>
+<style>
+:root{
+  /* 主题：灰粉（低饱和淡粉，取自背景图主色）。--accent 用于 focus 发光 / 步骤高亮 / 渐变起点，
+     --accent-strong 是加深端。所有透明度衍生都从 #d9a7ba 来，全文贯穿。 */
+  --accent:#d9a7ba;
+  --accent-strong:#a9778d;
+  --accent-soft:rgba(217,167,186,.45);
+  --accent-faint:rgba(217,167,186,.16);
+  --text:#ffffff;
+  --text-dim:rgba(255,255,255,.80);
+  --text-faint:rgba(255,255,255,.56);
+  --glass:rgba(18,18,28,.78);        /* 深色毛玻璃填充 */
+  --glass-field:rgba(0,0,0,.30);     /* 输入框深色填充 */
+  --line:rgba(255,255,255,.16);
+  --line-strong:rgba(255,255,255,.32);
+  --danger:#ff8a94;
+  --ok:#6ee7b7;
+  --radius:24px;
+  --font:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Hiragino Sans GB","Segoe UI",Roboto,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+/* html 也设底色：WebView2 初始化瞬间会露出 html 的默认白底，顶部就多一条白 */
+html{background:#150e14}
+html,body{height:100%}
+body{
+  font-family:var(--font);
+  color:var(--text);
+  background:#150e14;
+  overflow-x:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+
+/* ---------- 背景图：Ken Burns 缩放 + 深色遮罩 + 视差 ---------- */
+.bg{
+  position:fixed;inset:-12px;z-index:0;overflow:hidden;   /* 外扩 12px 给视差留位移空间 */
+  background:#150e14;
+  will-change:transform;
+}
+.bg img{
+  position:absolute;inset:0;
+  width:100%;height:100%;
+  object-fit:cover;
+  object-position:center;
+  filter:brightness(1.02) saturate(.95);
+  animation:kb 26s linear infinite;   /* Ken Burns：1 → 1.08 → 1 循环 */
+}
+@keyframes kb{
+  0%{transform:scale(1)}
+  50%{transform:scale(1.08)}
+  100%{transform:scale(1)}
+}
+/* 深色渐变遮罩：中心向外压暗，保证文字对比度 */
+.scrim{
+  position:absolute;inset:0;
+  background:
+    radial-gradient(120% 100% at 42% 40%, rgba(10,10,20,.28) 0%, rgba(10,10,20,.52) 100%),
+    linear-gradient(180deg, rgba(10,10,20,.40) 0%, rgba(10,10,20,.12) 45%, rgba(10,10,20,.48) 100%);
+}
+.vignette{
+  position:absolute;inset:0;
+  box-shadow:inset 0 0 180px 10px rgba(0,0,0,.26);
+  pointer-events:none;
+}
+
+/* ---------- 布局：≥768px 左右双区 ---------- */
+.stage{
+  position:relative;z-index:1;
+  min-height:100%;
+  display:flex;align-items:center;justify-content:center;
+  gap:56px;
+  padding:48px 28px;
+}
+.brand{
+  flex:0 1 45%;
+  max-width:470px;
+  display:flex;flex-direction:column;align-items:flex-start;
+}
+.card{
+  flex:0 1 580px;
+  max-width:580px;width:100%;
+  background:var(--glass);
+  backdrop-filter:blur(26px) saturate(160%);
+  -webkit-backdrop-filter:blur(26px) saturate(160%);
+  border:1px solid var(--line-strong);
+  border-radius:var(--radius);
+  box-shadow:
+    0 32px 80px -12px rgba(0,0,0,.62),
+    0 0 150px -18px var(--accent-faint),
+    0 0 0 .5px rgba(255,255,255,.06),
+    inset 0 1px 0 rgba(255,255,255,.12);
+  padding:36px 38px 30px;
+  position:relative;
+  overflow:visible;
+}
+.card::before{
+  content:"";position:absolute;top:0;left:12%;right:12%;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(244,214,226,.6),transparent);
+}
+
+/* ---------- 品牌区 ---------- */
+.brand .mark{
+  position:relative;
+  width:76px;height:76px;
+  border-radius:22px;
+  padding:2px;
+  background:linear-gradient(150deg, rgba(244,214,226,.9) 0%, rgba(217,167,186,.55) 45%, rgba(122,82,99,.8) 100%);
+  box-shadow:
+    0 14px 40px -8px var(--accent-soft),
+    0 0 0 1px rgba(255,255,255,.08);
+  margin-bottom:26px;
+  animation:rise .7s cubic-bezier(.22,1,.36,1) both;
+}
+.brand .mark img{
+  width:100%;height:100%;
+  border-radius:20px;
+  object-fit:cover;display:block;
+}
+.brand .mark::after{
+  content:"";position:absolute;inset:2px;
+  border-radius:20px;pointer-events:none;
+  background:linear-gradient(180deg,rgba(255,255,255,.22) 0%,rgba(255,255,255,0) 46%);
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.12);
+}
+.brand h1{
+  font-size:34px;font-weight:700;letter-spacing:.5px;line-height:1.25;
+  animation:rise .7s cubic-bezier(.22,1,.36,1) .08s both;
+}
+.brand .slogan{
+  margin-top:14px;
+  font-size:15.5px;color:var(--text-dim);line-height:1.8;letter-spacing:.3px;
+  animation:rise .7s cubic-bezier(.22,1,.36,1) .16s both;
+}
+.brand .slogan b{color:#ffd9e0;font-weight:600}
+.brand .badges{
+  display:flex;flex-wrap:wrap;gap:8px;margin-top:24px;
+  animation:rise .7s cubic-bezier(.22,1,.36,1) .24s both;
+}
+.badge{
+  font-size:11.5px;color:var(--text-dim);
+  border:1px solid var(--line);border-radius:999px;
+  padding:5px 12px;background:rgba(255,255,255,.05);
+  backdrop-filter:blur(8px);
+}
+
+/* ---------- 卡片内移动端头部（窄屏显示） ---------- */
+.head{display:none}
+
+/* ---------- 步骤指示器 ---------- */
+.stepper{
+  list-style:none;
+  display:flex;align-items:flex-start;
+  margin-bottom:26px;
+  animation:rise .6s cubic-bezier(.22,1,.36,1) .05s both;
+}
+.stepper .st{
+  flex:1;position:relative;
+  display:flex;flex-direction:column;align-items:center;gap:7px;
+  cursor:pointer;
+}
+.stepper .st + .st::before{
+  content:"";position:absolute;top:9px;left:calc(-50% + 14px);right:calc(50% + 14px);
+  height:2px;background:var(--line);border-radius:2px;
+}
+.stepper .st.done + .st::before{background:var(--accent)}
+.stdot{
+  width:20px;height:20px;border-radius:50%;
+  border:2px solid var(--line-strong);background:transparent;
+  display:flex;align-items:center;justify-content:center;
+  font-size:10px;color:transparent;
+  transition:all .25s;
+  position:relative;z-index:1;
+  background:#14141f;
+}
+.stepper .st.active .stdot{
+  border-color:var(--accent);
+  box-shadow:0 0 0 5px var(--accent-faint);
+  background:var(--accent);
+}
+.stepper .st.done .stdot{
+  border-color:var(--accent);background:var(--accent-faint);color:#ffd9e0;
+}
+.stepper .st.done .stdot::after{content:"✓"}
+.stlabel{font-size:11px;color:var(--text-faint);letter-spacing:.3px;transition:color .25s}
+.stepper .st.active .stlabel{color:#fff;font-weight:600}
+.stepper .st.done .stlabel{color:var(--text-dim)}
+
+/* ---------- 分组 ---------- */
+.group{margin-bottom:26px;animation:rise .6s cubic-bezier(.22,1,.36,1) both}
+.group:nth-of-type(1){animation-delay:.10s}
+.group:nth-of-type(2){animation-delay:.15s}
+.group:nth-of-type(3){animation-delay:.20s}
+.gtitle{
+  display:flex;align-items:center;gap:8px;
+  font-size:11.5px;font-weight:600;letter-spacing:1.5px;
+  color:var(--text-faint);text-transform:uppercase;
+  margin-bottom:14px;
+}
+.gtitle::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,var(--line),transparent)}
+
+/* ---------- 表单 ---------- */
+.field{margin-bottom:15px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:13px}
+label{display:block;font-size:12.5px;color:var(--text-dim);margin-bottom:7px;font-weight:500;letter-spacing:.2px}
+label .opt{color:var(--text-faint);font-weight:400;font-size:11.5px}
+
+input,textarea{
+  width:100%;font-family:var(--font);font-size:14px;color:var(--text);
+  background:var(--glass-field);
+  border:1px solid var(--line);
+  border-radius:11px;
+  padding:0 13px;height:44px;
+  transition:border-color .2s,background .2s,box-shadow .2s;
+  outline:none;
+}
+textarea{
+  height:auto;min-height:120px;padding:12px 13px;line-height:1.7;
+  /* 高度由 JS 跟着内容自动撑开（autoGrow），手动拖拽会打架 */
+  resize:none;overflow-y:auto;font-size:13.5px;
+}
+input::placeholder,textarea::placeholder{color:var(--text-faint)}
+input:hover,textarea:hover{border-color:var(--line-strong)}
+input:focus,textarea:focus{
+  border-color:var(--accent);
+  background:rgba(0,0,0,.24);
+  box-shadow:0 0 0 5px var(--accent-faint);   /* focus 外发光 */
+}
+input.bad,textarea.bad{border-color:rgba(255,122,138,.85);box-shadow:0 0 0 5px rgba(255,122,138,.14)}
+
+/* ---------- tooltip：说明收纳成 ⓘ ---------- */
+.tip{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:15px;height:15px;margin-left:5px;
+  border:1px solid var(--line-strong);border-radius:50%;
+  font-size:9.5px;font-weight:700;color:var(--text-faint);
+  cursor:help;vertical-align:1px;position:relative;
+  user-select:none;
+}
+.tip::after{
+  content:attr(data-tip);
+  position:absolute;bottom:calc(100% + 10px);left:50%;
+  transform:translateX(-50%) translateY(3px);
+  background:rgba(12,12,22,.96);
+  border:1px solid var(--line-strong);
+  padding:9px 12px;border-radius:9px;
+  font-size:11.5px;font-weight:400;line-height:1.6;
+  color:var(--text-dim);white-space:normal;width:max-content;max-width:250px;
+  opacity:0;pointer-events:none;
+  transition:opacity .18s,transform .18s;
+  z-index:40;
+  box-shadow:0 12px 32px -8px rgba(0,0,0,.6);
+}
+.tip:hover::after,.tip:focus::after{opacity:1;transform:translateX(-50%) translateY(0)}
+
+/* 密码框 + 检测连通性 */
+.pw{display:flex;gap:8px}
+.pw input{flex:1;min-width:0;padding-right:0}
+.pw button{
+  height:44px;padding:0 12px;flex-shrink:0;
+  font-size:11.5px;font-family:var(--font);color:var(--text-dim);
+  background:rgba(255,255,255,.06);border:1px solid var(--line);border-radius:10px;
+  cursor:pointer;transition:all .16s;white-space:nowrap;
+}
+.pw button:hover{color:#fff;border-color:var(--line-strong);background:rgba(255,255,255,.1)}
+#checkConn{color:#ffd9e0;border-color:rgba(217,167,186,.45)}
+#checkConn:hover{border-color:var(--accent);background:var(--accent-faint)}
+#checkConn:disabled{opacity:.5;cursor:wait}
+.conn-result{font-size:12px;margin-top:7px;display:none;line-height:1.6}
+.conn-result.show{display:block}
+.conn-result.ok{color:var(--ok)}
+.conn-result.bad{color:var(--danger)}
+
+/* ---------- 自定义供应商下拉 ---------- */
+.dd{position:relative}
+.dd-btn{
+  width:100%;height:44px;
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+  font-family:var(--font);font-size:14px;color:var(--text);
+  background:var(--glass-field);
+  border:1px solid var(--line);border-radius:11px;
+  padding:0 13px;cursor:pointer;
+  transition:border-color .2s,box-shadow .2s,background .2s;
+  text-align:left;
+}
+.dd-btn:hover{border-color:var(--line-strong)}
+.dd.open .dd-btn{border-color:var(--accent);box-shadow:0 0 0 5px var(--accent-faint)}
+.dd-btn .chev{transition:transform .2s;flex-shrink:0;opacity:.6}
+.dd.open .dd-btn .chev{transform:rotate(180deg)}
+.dd-panel{
+  position:absolute;top:calc(100% + 7px);left:0;right:0;
+  background:rgba(16,16,26,.97);
+  backdrop-filter:blur(24px);
+  border:1px solid var(--line-strong);border-radius:13px;
+  box-shadow:0 24px 60px -12px rgba(0,0,0,.7);
+  padding:6px;z-index:30;
+  opacity:0;transform:translateY(-5px);pointer-events:none;
+  transition:opacity .18s,transform .18s;
+  max-height:264px;overflow-y:auto;
+}
+.dd.open .dd-panel{opacity:1;transform:translateY(0);pointer-events:auto}
+.dd-item{
+  width:100%;display:block;text-align:left;
+  background:transparent;border:0;border-radius:9px;
+  padding:9px 12px;cursor:pointer;
+  font-family:var(--font);
+  transition:background .14s;
+}
+.dd-item:hover,.dd-item.sel{background:var(--accent-faint)}
+.dd-item .dd-name{display:block;font-size:13.5px;color:var(--text);font-weight:500}
+.dd-item .dd-note{display:block;font-size:11px;color:var(--text-faint);margin-top:2px;line-height:1.5}
+.dd-item.sel .dd-name::after{content:" ✓";color:var(--accent)}
+
+/* 人设预设 chips + 随机按钮 */
+.prow{display:flex;align-items:center;justify-content:space-between;margin-bottom:7px}
+.prow label{margin-bottom:0}
+.btn-mini{
+  display:inline-flex;align-items:center;gap:5px;
+  font-size:11.5px;font-family:var(--font);color:#ffd9e0;
+  background:rgba(217,167,186,.12);border:1px solid rgba(217,167,186,.4);
+  border-radius:999px;padding:5px 12px;cursor:pointer;
+  transition:all .16s;
+}
+.btn-mini:hover{background:var(--accent-faint);border-color:var(--accent);transform:translateY(-1px)}
+.chips{display:flex;flex-wrap:wrap;gap:7px;margin-top:9px}
+.chip{
+  font-size:11.5px;font-family:var(--font);color:var(--text-dim);
+  background:rgba(255,255,255,.06);border:1px solid var(--line);
+  border-radius:999px;padding:5px 11px;cursor:pointer;
+  transition:all .16s;
+}
+.chip:hover{color:#fff;border-color:rgba(244,214,226,.6);background:var(--accent-faint)}
+
+/* ---------- 按钮 ---------- */
+.actions{display:flex;flex-direction:column;gap:11px;margin-top:26px;animation:rise .6s cubic-bezier(.22,1,.36,1) .25s both}
+button.primary{
+  width:100%;height:52px;border:0;border-radius:14px;cursor:pointer;
+  font-family:var(--font);font-size:15.5px;font-weight:600;letter-spacing:1px;
+  color:#fff;
+  background:linear-gradient(135deg,#e2b4c4 0%,#d9a7ba 45%,#a9778d 100%);
+  box-shadow:0 14px 36px -8px var(--accent-soft),inset 0 1px 0 rgba(255,255,255,.3);
+  transition:transform .18s,box-shadow .18s,filter .18s;
+}
+button.primary:hover{transform:translateY(-2px);box-shadow:0 20px 44px -8px rgba(217,167,186,.55),inset 0 1px 0 rgba(255,255,255,.3)}
+button.primary:active{transform:translateY(0)}
+button.primary:disabled{opacity:.55;cursor:not-allowed;transform:none;filter:grayscale(.3)}
+button.ghost{
+  height:42px;border-radius:12px;cursor:pointer;
+  font-family:var(--font);font-size:13px;color:var(--text-dim);
+  background:rgba(255,255,255,.06);border:1px solid var(--line);
+  transition:all .16s;
+}
+button.ghost:hover{color:#fff;border-color:var(--line-strong);background:rgba(255,255,255,.1)}
+button.ghost:disabled{opacity:.5;cursor:not-allowed}
+
+/* ---------- 状态条 ---------- */
+.status{
+  margin-top:16px;padding:11px 14px;border-radius:11px;font-size:12.5px;
+  line-height:1.6;display:none;
+}
+.status.show{display:block}
+.status.info{background:var(--accent-faint);border:1px solid rgba(217,167,186,.4);color:#ded6ff}
+.status.ok{background:rgba(110,231,183,.1);border:1px solid rgba(110,231,183,.32);color:#b6f5dd}
+.status.bad{background:rgba(255,122,138,.1);border:1px solid rgba(255,122,138,.34);color:#ffc4cc}
+
+/* ---------- 提交后的进度页 ---------- */
+.done{display:none;text-align:center;padding:8px 0 4px;animation:rise .5s cubic-bezier(.22,1,.36,1) both}
+.done.show{display:block}
+.done h2{font-size:20px;font-weight:600;margin-bottom:10px}
+.done p{font-size:13px;color:var(--text-dim);line-height:1.7;margin-bottom:6px}
+.steps{text-align:left;margin:22px auto 6px;max-width:340px;display:flex;flex-direction:column;gap:11px}
+.step{display:flex;align-items:flex-start;gap:11px;font-size:13px;color:var(--text-dim)}
+.step .dot{
+  width:18px;height:18px;border-radius:50%;flex-shrink:0;margin-top:1px;
+  border:1.5px solid var(--line-strong);
+  display:flex;align-items:center;justify-content:center;font-size:10px;
+}
+.step.active{color:#fff}
+.step.active .dot{border-color:var(--accent);background:var(--accent-faint);box-shadow:0 0 0 4px var(--accent-faint)}
+.step.done .dot{background:var(--accent-faint);border-color:rgba(217,167,186,.7);color:#ffd9e0}
+.spin{
+  width:9px;height:9px;border-radius:50%;
+  border:1.5px solid rgba(244,214,226,.38);border-top-color:var(--accent);
+  animation:sp .7s linear infinite;
+}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+/* 启动过程中的实时日志 */
+.plog{
+  margin-top:14px;padding:11px 13px;border-radius:11px;text-align:left;
+  background:rgba(0,0,0,.3);border:1px solid var(--line);
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:11.5px;line-height:1.75;color:var(--text-dim);
+  max-height:132px;overflow-y:auto;
+}
+.plog:empty{display:none}
+.plog div{white-space:pre-wrap;word-break:break-all}
+
+/* ---------- 扫码登录面板 ---------- */
+.qrbox{
+  display:none;margin-top:18px;padding:18px;border-radius:14px;
+  background:var(--accent-faint);border:1px solid rgba(217,167,186,.45);
+  text-align:center;
+}
+.qrbox.show{display:block;animation:rise .5s cubic-bezier(.22,1,.36,1) both}
+.qrbox .tlabel{
+  font-size:12px;color:#ded6ff;margin-bottom:12px;letter-spacing:.5px;font-weight:600;
+}
+.qrwrap{
+  position:relative;width:200px;height:200px;margin:0 auto;
+  background:#fff;border-radius:12px;padding:10px;
+  box-shadow:0 0 0 1px rgba(255,255,255,.18);
+}
+#qrCanvas{display:block;width:100%;height:100%;image-rendering:pixelated;border-radius:6px}
+.qrmask{
+  position:absolute;inset:0;border-radius:12px;display:none;
+  align-items:center;justify-content:center;flex-direction:column;gap:10px;
+  background:rgba(255,255,255,.92);color:#7a5566;
+  font-size:12.5px;font-weight:600;
+}
+.qrmask.show{display:flex}
+.qrmask .big{font-size:34px;line-height:1}
+.qrmask.bad{background:rgba(255,246,250,.96);color:#b0556f}
+#qrRefresh{
+  width:100%;margin-top:10px;height:38px;font-size:12px;
+}
+#goNapcat{width:100%;margin-top:10px}
+.qrstatus{
+  margin-top:11px;font-size:12.5px;color:var(--text-dim);min-height:19px;line-height:1.6;
+}
+.qrstatus.ok{color:#8fd6a4;font-weight:600}
+
+/* ---------- 运行日志面板 ---------- */
+.consbox{margin-top:14px;text-align:left}
+#consToggle{width:100%;height:38px;font-size:12px}
+#consText{
+  display:none;margin-top:8px;padding:12px 13px;border-radius:11px;
+  background:rgba(0,0,0,.42);border:1px solid var(--line);
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:11.5px;line-height:1.72;color:var(--text-dim);
+  max-height:240px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;
+}
+#consText.show{display:block}
+
+.foot{
+  margin-top:22px;padding-top:17px;border-top:1px solid rgba(255,255,255,.09);
+  font-size:11.5px;color:var(--text-faint);text-align:center;line-height:1.7;
+}
+
+/* ---------- 自定义标题栏（无边框窗口） ---------- */
+.titlebar{
+  position:fixed;top:0;left:0;right:0;height:40px;z-index:100;
+  display:none;align-items:center;gap:14px;padding-left:14px;
+  background:rgba(10,7,10,.96);border-bottom:1px solid rgba(217,167,186,.12);
+  user-select:none;
+}
+body.in-app .titlebar{display:flex}
+body.in-app .stage{padding-top:76px}
+.tb-title{
+  font-size:12.5px;font-weight:600;color:#ffd9e0;letter-spacing:1px;
+  padding:4px 8px;cursor:default;white-space:nowrap;
+}
+.tb-drag{flex:1;align-self:stretch;cursor:move}
+.wbtns{display:flex;align-self:stretch}
+.wbtn{
+  border:0;width:46px;background:transparent;color:var(--text-dim);cursor:pointer;
+  font-size:13px;font-family:var(--font);transition:all .15s;
+}
+.wbtn:hover{background:rgba(255,255,255,.12);color:#fff}
+.wbtn-close:hover{background:#c0392b;color:#fff}
+
+.tabs{
+  display:flex;gap:4px;padding:3px;border-radius:999px;
+  background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);
+}
+.tab{
+  border:0;background:transparent;color:var(--text-dim);cursor:pointer;
+  font-family:var(--font);font-size:12.5px;font-weight:600;letter-spacing:1px;
+  padding:7px 18px;border-radius:999px;transition:all .18s;
+}
+.tab:hover{color:#fff}
+.tab.active{background:var(--accent-faint);color:#ffd9e0;box-shadow:inset 0 0 0 1px rgba(217,167,186,.4)}
+
+/* ---------- 终端页 ---------- */
+.term-page{
+  position:fixed;inset:0;z-index:40;display:flex;flex-direction:column;
+  padding:64px 26px 26px;
+  background:rgba(16,10,16,.88);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+}
+.term-page[hidden]{display:none}
+.term-head{
+  display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap;
+}
+.term-title{font-size:15px;font-weight:700;color:#ffd9e0;letter-spacing:1px}
+.term-sub{font-size:11.5px;color:var(--text-faint);flex:1;min-width:200px}
+.btn-mini{
+  border:1px solid var(--line);background:rgba(255,255,255,.06);color:var(--text-dim);
+  font-family:var(--font);font-size:11.5px;padding:6px 13px;border-radius:8px;cursor:pointer;
+  transition:all .16s;
+}
+.btn-mini:hover{color:#fff;border-color:var(--line-strong)}
+.term-body{
+  flex:1;min-height:0;overflow-y:auto;margin:0;
+  padding:14px 16px;border-radius:12px;
+  background:rgba(0,0,0,.5);border:1px solid var(--line);
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:12px;line-height:1.75;color:#b8c9b0;
+  white-space:pre-wrap;word-break:break-all;
+}
+/* ---------- 入场动画 ---------- */
+@keyframes rise{
+  from{opacity:0;transform:translateY(16px)}
+  to{opacity:1;transform:translateY(0)}
+}
+.card{animation:rise .65s cubic-bezier(.22,1,.36,1) both}
+
+/* ---------- 响应式：<768px 单列，品牌压缩 ---------- */
+@media (max-width:768px){
+  .stage{flex-direction:column;gap:26px;padding:32px 16px}
+  .brand{
+    flex:none;max-width:100%;
+    flex-direction:row;align-items:center;gap:16px;
+    width:100%;max-width:580px;
+  }
+  .brand .mark{width:52px;height:52px;border-radius:15px;margin-bottom:0}
+  .brand .mark img{border-radius:13px}
+  .brand .mark::after{border-radius:13px}
+  .brand h1{font-size:20px}
+  .brand .slogan{margin-top:4px;font-size:12.5px}
+  .brand .badges{display:none}
+}
+@media (max-width:560px){
+  .card{padding:26px 20px 22px;border-radius:20px}
+  .grid2{grid-template-columns:1fr;gap:0}
+  .stlabel{font-size:10px}
+  .pw{flex-wrap:wrap}
+  #checkConn{flex:1}
+}
+/* ---------- 无障碍：系统关闭动画时全部静态 ---------- */
+@media (prefers-reduced-motion:reduce){
+  .bg img{animation:none}
+  .card,.brand .mark,.brand h1,.brand .slogan,.brand .badges,
+  .stepper,.group,.actions,.done,.qrbox{animation:none}
+  input,textarea,.dd-btn,.dd-panel,button,.stdot,.chev{transition:none}
+  .spin{animation-duration:1.6s}
+}
+::-webkit-scrollbar{width:9px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:9px}
+::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.24)}
+</style>
+</head>
+<body>
+
+<div class="bg" id="bg">
+  <img src="bg.jpg" alt="">
+  <div class="scrim"></div>
+  <div class="vignette"></div>
+</div>
+
+<div class="stage">
+
+  <!-- 左：品牌区（≥768px 显示；窄屏压缩成卡片上方一行） -->
+  <aside class="brand">
+    <div class="mark"><img src="icon.png" alt="Logo"></div>
+    <div>
+      <h1>QQ 群 AI 机器人</h1>
+      <p class="slogan">让每个群，都有一个 <b>AI 伙伴</b>。<br>填一次配置，扫码即用。</p>
+    </div>
+    <div class="badges">
+      <span class="badge">🤖 人设可定制</span>
+      <span class="badge">🖼️ 识图 · 联网 · 爬虫</span>
+      <span class="badge">🔒 密钥只存本机</span>
+    </div>
+  </aside>
+
+  <!-- 右：配置卡片 -->
+  <main class="card">
+
+    <form id="cfg">
+
+      <!-- 步骤指示器：随分组滚动高亮，点击可跳转 -->
+      <ol class="stepper" id="stepper">
+        <li class="st active" data-step="1"><span class="stdot"></span><span class="stlabel">连接账号</span></li>
+        <li class="st" data-step="2"><span class="stdot"></span><span class="stlabel">选择模型</span></li>
+        <li class="st" data-step="3"><span class="stdot"></span><span class="stlabel">设置人设</span></li>
+        <li class="st" data-step="4"><span class="stdot"></span><span class="stlabel">完成</span></li>
+      </ol>
+
+      <!-- 分组一：账号 -->
+      <section class="group" id="grp-account" data-step="1">
+        <div class="gtitle">账号</div>
+        <div class="field grid2">
+          <div>
+            <label for="qq">QQ 号<span class="tip" tabindex="0" data-tip="机器人用的那个号，建议小号">?</span></label>
+            <input id="qq" name="qq" inputmode="numeric" autocomplete="off" placeholder="123456789">
+          </div>
+          <div>
+            <label for="botname">机器人名字<span class="tip" tabindex="0" data-tip="群里被叫的名字">?</span></label>
+            <input id="botname" name="botname" autocomplete="off" placeholder="比如：小助手">
+          </div>
+        </div>
+      </section>
+
+      <!-- 分组二：模型 -->
+      <section class="group" id="grp-model" data-step="2">
+        <div class="gtitle">模型</div>
+        <div class="field grid2">
+          <div>
+            <label for="vendorDD">模型供应商<span class="tip" tabindex="0" data-tip="选好会自动填接口地址和模型名称，填完仍可手动改">?</span></label>
+            <div class="dd" id="vendorDD">
+              <button type="button" class="dd-btn" id="vendorBtn">
+                <span id="vendorBtnName">小米 MiMo</span>
+                <svg class="chev" width="12" height="8" viewBox="0 0 12 8" fill="none"><path d="M1 1.5L6 6.5L11 1.5" stroke="#fff" stroke-opacity=".7" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <div class="dd-panel" id="vendorPanel"></div>
+            </div>
+          </div>
+          <div>
+            <label for="model">模型名称<span class="tip" tabindex="0" data-tip="选供应商会自动填，随时可以直接改成任意模型名">?</span></label>
+            <input id="model" name="model" autocomplete="off" placeholder="mimo-v2.6-flash">
+          </div>
+        </div>
+        <div class="field">
+          <label for="base">接口地址 <span class="opt">Base URL</span></label>
+          <input id="base" name="base" autocomplete="off" placeholder="https://api.xiaomimimo.com/v1">
+        </div>
+        <div class="field">
+          <label for="key">API Key<span class="tip" tabindex="0" id="keyTip" data-tip="只存在你自己的电脑上，不会上传到任何地方">?</span></label>
+          <div class="pw">
+            <input id="key" name="key" type="password" autocomplete="off" placeholder="粘贴你的 API Key">
+            <button type="button" id="toggleKey">显示</button>
+            <button type="button" id="checkConn">检测连通性</button>
+          </div>
+          <div class="conn-result" id="connResult"></div>
+        </div>
+      </section>
+
+      <!-- 分组三：人设 -->
+      <section class="group" id="grp-persona" data-step="3">
+        <div class="gtitle">人设</div>
+        <div class="field">
+          <div class="prow">
+            <label for="persona">机器人人设 <span class="opt">决定它说话的语气</span></label>
+            <button type="button" class="btn-mini" id="randomPersona" title="随机换一个人设">🎲 随机人设</button>
+          </div>
+          <textarea id="persona" name="persona" placeholder="描述一下它是什么样的人、怎么说话……"></textarea>
+          <div class="chips" id="chips"></div>
+          <span class="tip" tabindex="0" style="margin-top:10px" data-tip="只写性格和说话方式就行。「不许编造文件名」这类防幻觉约束由程序自动加上，优先级高于人设，不会被这里覆盖。">?</span>
+        </div>
+      </section>
+
+      <div class="actions">
+        <button type="submit" class="primary" id="go">保存并启动</button>
+        <button type="button" class="ghost" id="test">测试连接（完整对话验证）</button>
+      </div>
+
+      <div class="status" id="status"></div>
+
+      <div class="foot">
+        点「保存并启动」之后会自动写好配置、拉起机器人，<br>
+        然后直接在这一页用手机 QQ 扫码登录，不用再去别的页面。
+      </div>
+    </form>
+
+    <!-- 提交后：进度 + Token 页 -->
+    <div class="done" id="done" data-step="4">
+      <h2 id="doneTitle">正在启动…</h2>
+      <p id="doneSub">别关这个窗口，第一次跑可能要几分钟</p>
+      <div class="steps" id="steps"></div>
+      <div class="plog" id="plog"></div>
+      <div class="status" id="status2"></div>
+      <div class="qrbox" id="qrbox">
+        <div class="tlabel">用手机 QQ 扫码登录</div>
+        <div class="qrwrap">
+          <canvas id="qrCanvas" width="180" height="180"></canvas>
+          <div class="qrmask" id="qrMask"><span class="big" id="qrMaskIcon"></span><span id="qrMaskText"></span></div>
+        </div>
+        <div class="qrstatus" id="qrStatus">正在获取二维码…</div>
+        <button type="button" class="ghost" id="qrRefresh">二维码过期了？点我刷新</button>
+        <button type="button" class="primary" id="goNapcat">登录成功后，打开 NapCat 管理页</button>
+      </div>
+
+      <div class="consbox">
+        <button type="button" class="ghost" id="consToggle">▸ 运行日志（机器人核心 / NapCat）</button>
+        <pre id="consText" hidden></pre>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- 二维码生成库（qrcode-generator，MIT，本地文件不联网） -->
+<!-- 自定义标题栏（无边框窗口专用；浏览器里自动隐藏）：
+     左边标题 + 页签，中间空白可拖动窗口，右边窗口按钮 -->
+<header class="titlebar" id="titlebar">
+  <span class="tb-title pywebview-drag-region">QQ 群 AI 机器人</span>
+  <nav class="tabs" id="tabs">
+    <button type="button" class="tab active" data-page="home">主 页</button>
+    <button type="button" class="tab" data-page="term">终 端</button>
+  </nav>
+  <span class="tb-drag pywebview-drag-region"></span>
+  <div class="wbtns">
+    <button type="button" class="wbtn" id="btnMin" title="最小化">&#x2500;</button>
+    <button type="button" class="wbtn" id="btnMax" title="最大化 / 还原">&#x25A1;</button>
+    <button type="button" class="wbtn wbtn-close" id="btnClose" title="关闭">&#x2715;</button>
+  </div>
+</header>
+
+<!-- 终端页：整页日志，给懂的人排查用 -->
+<section class="term-page" id="termPage" hidden>
+  <div class="term-head">
+    <span class="term-title">运行日志</span>
+    <span class="term-sub">[核心] = 机器人 NoneBot · [NapCat] = 协议端 · 自动刷新，暂停后可往上翻</span>
+    <button type="button" class="btn-mini" id="termPause">⏸ 暂停</button>
+    <button type="button" class="btn-mini" id="termClear">✕ 清屏</button>
+  </div>
+  <pre class="term-body" id="termText">（暂无日志。点「保存并启动」之后，机器人核心和 NapCat 的输出会实时出现在这里。）</pre>
+</section>
+
+<script src="qrcode.js"></script>
+<script>
+const VENDORS = [
+  { id:"mimo", name:"小米 MiMo", base:"https://api.xiaomimimo.com/v1",
+    models:["mimo-v2.6-flash","mimo-v2.6-pro"],
+    note:"原生多模态 + 可联网搜索，当前推荐" },
+  { id:"zhipu", name:"智谱 GLM", base:"https://open.bigmodel.cn/api/paas/v4",
+    models:["glm-4.5-air","glm-4-flash-250414"],
+    note:"glm-4-flash-250414 是免费的，适合先试水" },
+  { id:"dashscope", name:"阿里云百炼", base:"https://dashscope.aliyuncs.com/compatible-mode/v1",
+    models:["qwen-plus","qwen-max"],
+    note:"通义千问系列，模型多、额度大方" },
+  { id:"deepseek", name:"DeepSeek", base:"https://api.deepseek.com/v1",
+    models:["deepseek-chat","deepseek-reasoner"],
+    note:"便宜，但纯文本、不支持识图" },
+  { id:"ollama", name:"本机 Ollama", base:"http://127.0.0.1:11434/v1",
+    models:["qwen3.5:4b","qwen3.5:9b"],
+    note:"完全免费、不联网，但要先装好 Ollama" },
+  { id:"custom", name:"其他 / 自定义", base:"", models:[],
+    note:"任何 OpenAI 兼容接口都能用" }
+];
+
+// 人设预设。第一条是默认值，刻意写得中性、没有个性包袱 ——
+// 它要和 config.py 里那份默认人设口径一致，否则「网页没填」和「手动改配置」
+// 会得到两种不同的机器人。
+const PERSONAS = [
+  { name:"通用助手",
+    text:"你是这个 QQ 群里的 AI 助手。\n\n友好、耐心，说话自然，像群里一个靠谱的朋友。不端架子，也不刻意卖萌。别人问什么就答什么，不知道就直说不知道。\n\n说话简洁，一般不超过 100 字，群聊不是演讲台。可以用口语，但别用客服腔。" },
+  { name:"温柔助手",
+    text:"你是一位温柔耐心的助手。说话亲切自然，像朋友一样。回答简洁清楚，多用短句，偶尔可以开个无伤大雅的玩笑。" },
+  { name:"毒舌吐槽役",
+    text:"你是个嘴上不饶人但心里很热心的家伙。喜欢吐槽，语气俏皮，但每次都会把问题真正解决掉。吐槽只针对事情，不针对人。" },
+  { name:"猫娘助手",
+    text:"你是群里的猫娘助手，性格软糯但做事麻利。说话轻快，句尾偶尔带一个「喵」，但不刷屏、不硬卖萌。别人问正事的时候立刻切换成认真模式，回答清楚利落。" },
+  { name:"开心果",
+    text:"你是群里的开心果，自带综艺感。说话活泼，善用梗和比喻，能把枯燥的事讲得有意思。分寸感很好：玩笑归玩笑，别人认真提问时立刻靠谱起来，答案准确第一。" },
+  { name:"靠谱学长",
+    text:"你是群里一位靠谱的「学长」，冷静理性，讲东西有条理：先给结论，再给原因，必要的时候列 1、2、3。不啰嗦不卖萌，遇到拿不准的事会直说「这个我不太确定」，绝不瞎编。" },
+  { name:"深夜诗人",
+    text:"你是群里的「深夜诗人」，说话带一点文艺气，喜欢用短句和意象，但绝不矫情。白天正常聊天，越晚文采越好。别人问技术问题时马上切回实用模式，答得干净利落。" },
+  { name:"游戏搭子",
+    text:"你是群里的「游戏搭子」，懂各种游戏梗，说话像开黑的队友：热情、直接、节奏快。聊游戏能聊得头头是道，聊别的也一样认真对待，答案靠谱，偶尔甩一句游戏台词当梗。" }
+];
+
+const DEFAULT_PERSONA = PERSONAS[0].text;
+
+const $ = (s) => document.querySelector(s);
+const modelEl = $("#model"), baseEl = $("#base");
+const statusEl = $("#status");
+
+/* ---------------- 供应商：自定义下拉 ----------------
+   替换原生 select。curVendor 是唯一数据源，
+   collect() / applyVendor / 回填逻辑都改读它，数据流不变。 */
+let curVendor = "mimo";
+
+function fillVendors(){
+  $("#vendorPanel").innerHTML = VENDORS.map(v =>
+    `<button type="button" class="dd-item" data-id="${v.id}">` +
+    `<span class="dd-name">${v.name}</span>` +
+    `<span class="dd-note">${v.note}</span></button>`).join("");
+  $("#vendorPanel").addEventListener("click", e => {
+    const item = e.target.closest(".dd-item");
+    if(!item) return;
+    selectVendor(item.dataset.id, false);
+    closeDD();
+  });
+}
+
+function selectVendor(id, keepValues){
+  curVendor = id;
+  const v = VENDORS.find(x => x.id === id) || VENDORS[0];
+  $("#vendorBtnName").textContent = v.name;
+  document.querySelectorAll(".dd-item").forEach(el =>
+    el.classList.toggle("sel", el.dataset.id === id));
+  applyVendor(id, keepValues);
+}
+
+function applyVendor(id, keepValues){
+  const v = VENDORS.find(x => x.id === id) || VENDORS[0];
+  if(!keepValues){
+    baseEl.value = v.base;
+    if(v.models.length) modelEl.value = v.models[0];
+  }
+  // Key 的说明跟随供应商变化（收纳进了 ⓘ tooltip）
+  const tip = $("#keyTip");
+  const bits = [];
+  if(v.note) bits.push(v.note);
+  if(v.id === "ollama") bits.push("API Key 随便填，比如 ollama");
+  else if(v.id !== "custom") bits.push("在" + v.name + "控制台申请");
+  bits.push("只存在你自己的电脑上");
+  tip.dataset.tip = bits.join(" · ");
+}
+
+const dd = $("#vendorDD");
+function closeDD(){ dd.classList.remove("open"); }
+$("#vendorBtn").addEventListener("click", () => dd.classList.toggle("open"));
+document.addEventListener("click", e => {
+  if(!dd.contains(e.target)) closeDD();
+});
+document.addEventListener("keydown", e => {
+  if(e.key === "Escape") closeDD();
+});
+
+// 让 textarea 跟着内容长高。人设动辄四五段，固定高度会把它截断。
+function autoGrow(el){
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight, 380) + "px";
+}
+
+function fillChips(){
+  $("#chips").innerHTML = PERSONAS.slice(0, 5).map((p,i) =>
+    `<button type="button" class="chip" data-i="${i}">${p.name}</button>`).join("");
+  $("#chips").addEventListener("click", e => {
+    const b = e.target.closest(".chip");
+    if(!b) return;
+    fillPersona(+b.dataset.i);
+  });
+  $("#persona").addEventListener("input", e => autoGrow(e.target));
+}
+
+function fillPersona(i){
+  const ta = $("#persona");
+  ta.value = PERSONAS[i].text;
+  ta.classList.remove("bad");
+  autoGrow(ta);
+  saveForm();   // 程序赋值不触发 input 事件，手动存一次
+}
+
+/* 🎲 随机人设：不重复上一次 */
+let lastRandom = -1;
+$("#randomPersona").addEventListener("click", () => {
+  let i;
+  do{ i = Math.floor(Math.random() * PERSONAS.length); }
+  while(i === lastRandom && PERSONAS.length > 1);
+  lastRandom = i;
+  fillPersona(i);
+});
+
+function showStatus(kind, html, el){
+  const t = el || statusEl;
+  t.className = "status show " + kind;
+  t.innerHTML = html;
+}
+function hideStatus(el){ (el || statusEl).className = "status"; }
+
+function collect(){
+  return {
+    qq: $("#qq").value.trim(),
+    botname: $("#botname").value.trim(),
+    vendor: curVendor,
+    vendorName: (VENDORS.find(v => v.id === curVendor) || {}).name || "",
+    model: modelEl.value.trim(),
+    base: baseEl.value.trim(),
+    key: $("#key").value.trim(),
+    persona: $("#persona").value.trim()
+  };
+}
+
+/* ---------------- 本地记忆 ----------------
+   表单内容随输入自动保存，下次打开页面自动回填。
+   数据只存在本机浏览器（localStorage），和 API Key 的提示口径一致。 */
+const LS_KEY = "qqbot_form_v1";
+
+function saveForm(){
+  try{ localStorage.setItem(LS_KEY, JSON.stringify(collect())); }catch(e){}
+}
+
+function loadSaved(){
+  try{ return JSON.parse(localStorage.getItem(LS_KEY) || "null"); }
+  catch(e){ return null; }
+}
+
+function validate(){
+  const d = collect();
+  const bad = [];
+  const mark = (el, on) => el.classList.toggle("bad", on);
+
+  const qqOk = /^\d{5,12}$/.test(d.qq);
+  mark($("#qq"), !qqOk);
+  if(!qqOk) bad.push("QQ 号要填 5~12 位数字");
+
+  mark($("#botname"), !d.botname);
+  if(!d.botname) bad.push("机器人名字不能空");
+
+  mark(modelEl, !d.model);
+  if(!d.model) bad.push("模型名称不能空");
+
+  const baseOk = /^https?:\/\//i.test(d.base);
+  mark(baseEl, !baseOk);
+  if(!baseOk) bad.push("接口地址要以 http:// 或 https:// 开头");
+
+  const isOllama = d.vendor === "ollama";
+  mark($("#key"), !isOllama && !d.key);
+  if(!isOllama && !d.key) bad.push("API Key 不能空");
+
+  mark($("#persona"), !d.persona);
+  if(!d.persona) bad.push("人设不能空");
+
+  return { data:d, bad };
+}
+
+async function post(path, body){
+  const r = await fetch(path, {
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify(body || {})
+  });
+  let j = null;
+  try{ j = await r.json(); }catch(e){}
+  return { ok:r.ok, data:j || {} };
+}
+
+/* ---------------- 检测连通性（API Key 旁的按钮） ----------------
+   优先从浏览器直接 GET {base}/models（带 Key）；
+   供应商接口没开 CORS 时浏览器侧会失败（TypeError），
+   这时退回启动器的 /api/test 通道（服务端发请求，不受 CORS 限制）。 */
+$("#checkConn").addEventListener("click", async () => {
+  const d = collect();
+  const box = $("#connResult");
+  const btn = $("#checkConn");
+
+  if(!/^https?:\/\//i.test(d.base)){
+    box.className = "conn-result show bad";
+    box.textContent = "✗ 先把接口地址填对（要以 http:// 或 https:// 开头）";
+    return;
+  }
+  if(d.vendor !== "ollama" && !d.key){
+    box.className = "conn-result show bad";
+    box.textContent = "✗ 先填 API Key";
+    return;
+  }
+
+  btn.disabled = true; btn.textContent = "检测中…";
+  box.className = "conn-result show";
+  box.style.color = "var(--text-faint)";
+  box.textContent = "正在请求 " + d.base.replace(/\/+$/,"") + "/models …";
+
+  const done = (ok, msg) => {
+    btn.disabled = false; btn.textContent = "检测连通性";
+    box.className = "conn-result show " + (ok ? "ok" : "bad");
+    box.textContent = msg;
+  };
+
+  // ① 浏览器直连
+  try{
+    const r = await fetch(d.base.replace(/\/+$/,"") + "/models", {
+      headers: d.key ? { "Authorization": "Bearer " + d.key } : {},
+      signal: AbortSignal.timeout ? AbortSignal.timeout(12000) : undefined
+    });
+    if(r.ok){
+      let n = "";
+      try{
+        const j = await r.json();
+        const list = j.data || j.models || [];
+        if(Array.isArray(list) && list.length) n = "，共 " + list.length + " 个模型";
+      }catch(e){}
+      done(true, "✓ 连接正常" + n);
+    }else{
+      done(false, "✗ 服务端返回 " + r.status + (r.status === 401 ? "（Key 不对或没权限）" : ""));
+    }
+    return;
+  }catch(e){ /* CORS / 网络失败，走 ② */ }
+
+  // ② 退回启动器通道：完整对话验证
+  try{
+    const { ok, data:j } = await post("/api/test", d);
+    if(ok && j.ok){
+      done(true, "✓ 连接正常（走启动器验证，模型回了话，耗时 " + j.ms + " ms）");
+    }else{
+      done(false, "✗ 连不上：" + (j.error || "未知错误"));
+    }
+  }catch(e2){
+    done(false, "✗ 直连被浏览器拦截，启动器也不在线（" + e2.message + "）");
+  }
+});
+
+/* ---------------- 测试连接（完整对话验证，保留原有功能） ---------------- */
+$("#test").addEventListener("click", async () => {
+  const { data, bad } = validate();
+  if(bad.length){ showStatus("bad", "先检查一下：" + bad.join("；")); return; }
+  const btn = $("#test");
+  btn.disabled = true; btn.textContent = "测试中…";
+  showStatus("info", '<span class="spin" style="display:inline-block;vertical-align:-1px;margin-right:8px"></span>正在请求模型，稍等…');
+  try{
+    const { ok, data:j } = await post("/api/test", data);
+    if(ok && j.ok){
+      showStatus("ok", `连接正常，模型回了「${j.reply}」，耗时 ${j.ms} ms。`);
+    }else{
+      showStatus("bad", "连不上：" + (j.error || "未知错误"));
+    }
+  }catch(e){
+    showStatus("bad", "启动器好像没在跑（" + e.message + "）。请通过「启动.bat」打开这个页面。");
+  }
+  btn.disabled = false; btn.textContent = "测试连接（完整对话验证）";
+});
+
+/* ---------------- 提交 ---------------- */
+const STEPS = [
+  "写入配置文件",
+  "准备 NapCat 协议端",
+  "启动机器人核心",
+  "打开扫码登录页"
+];
+
+function renderSteps(steps, active){
+  const list = steps && steps.length ? steps : STEPS;
+  $("#steps").innerHTML = list.map((s,i) => {
+    const cls = i < active ? "done" : (i === active ? "active" : "");
+    const inner = i < active ? "✓" : (i === active ? '<span class="spin"></span>' : "");
+    return `<div class="step ${cls}"><span class="dot">${inner}</span><span>${s}</span></div>`;
+  }).join("");
+}
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"]/g, ch =>
+    ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[ch]));
+}
+
+function renderLog(lines){
+  const el = $("#plog");
+  el.innerHTML = (lines || []).map(l => `<div>${escapeHtml(l)}</div>`).join("");
+  el.scrollTop = el.scrollHeight;
+}
+
+function backToForm(title, sub, kind, msg){
+  stopQrPoll();   /* 重新配置时停掉扫码轮询 */
+  $("#doneTitle").textContent = title;
+  $("#doneSub").textContent = sub || "";
+  showStatus(kind, msg, $("#status2"));
+  $("#cfg").style.display = "";
+  $("#go").disabled = false;
+  setStepper(1);
+}
+
+$("#cfg").addEventListener("submit", async e => {
+  e.preventDefault();
+  const { data, bad } = validate();
+  if(bad.length){ showStatus("bad", "还差一点：" + bad.join("；")); return; }
+
+  $("#go").disabled = true;
+  hideStatus();
+
+  $("#cfg").style.display = "none";
+  $("#done").classList.add("show");
+  setStepper(4);
+  renderSteps(STEPS, 0);
+  renderLog([]);
+  $("#doneTitle").textContent = "正在启动…";
+  $("#doneSub").textContent = "别关这个窗口，第一次跑可能要几分钟";
+
+  try{
+    const { ok, data:j } = await post("/api/save", data);
+    if(!ok || !j.ok){
+      backToForm("没能开始启动", "", "bad",
+        (j && j.error) || "未知错误，请看启动器窗口里的输出");
+      return;
+    }
+  }catch(err){
+    backToForm("启动器断开了", "", "bad",
+      "和启动器的连接断了（" + err.message + "）。<br>请回到启动器窗口看看它的输出。");
+    return;
+  }
+
+  /* 真正的进度来自启动器 —— 第一次跑要下载 NapCat，可能好几分钟。 */
+  const poll = setInterval(async () => {
+    let p;
+    try{
+      const r = await fetch("/api/progress", { cache:"no-store" });
+      p = await r.json();
+    }catch(err){
+      return;   // 启动器还在，偶发失败就下次再取
+    }
+
+    if(p.steps) renderSteps(p.steps, p.step);
+    renderLog(p.log);
+    if(p.text) $("#doneSub").textContent = p.text;
+
+    if(p.state === "done"){
+      clearInterval(poll);
+      const list = p.steps || STEPS;
+      renderSteps(list, list.length);
+      $("#doneTitle").textContent = "启动成功";
+      $("#doneSub").textContent = p.message ||
+        "用手机 QQ 扫描下面的二维码登录；登录完成后机器人就上线了。";
+      if(p.webui){
+        showStatus("ok",
+          `二维码显示异常？也可以 <a href="${p.webui}" target="_blank" style="color:#ffd9e0">打开 NapCat 原生管理页</a> 扫码`,
+          $("#status2"));
+        lastWebui = p.webui;
+        $("#qrbox").classList.add("show");
+        startQrPoll();
+        $("#qrbox").scrollIntoView({ behavior:"smooth", block:"center" });
+      }else{
+        showStatus("ok", "没拿到 NapCat 的地址，请看启动器窗口里的提示。", $("#status2"));
+      }
+    }else if(p.state === "error"){
+      clearInterval(poll);
+      backToForm("启动失败", "", "bad",
+        escapeHtml(p.error || p.text || "未知错误") +
+        "<br>启动器窗口里有完整的报错信息。");
+    }
+  }, 700);
+});
+
+/* ---------------- 步骤指示器：随分组滚动高亮，点击跳转 ---------------- */
+function setStepper(n){
+  document.querySelectorAll("#stepper .st").forEach(li => {
+    const s = +li.dataset.step;
+    li.classList.toggle("active", s === n);
+    li.classList.toggle("done", s < n);
+  });
+}
+document.querySelectorAll("#stepper .st").forEach(li => {
+  li.addEventListener("click", () => {
+    const n = +li.dataset.step;
+    const target = n === 4 ? $("#done") : $('[data-step="' + n + '"].group');
+    if(target && target.offsetParent !== null){
+      target.scrollIntoView({ behavior:"smooth", block:"center" });
+    }
+  });
+});
+if("IntersectionObserver" in window){
+  const io = new IntersectionObserver(entries => {
+    entries.forEach(en => {
+      if(en.isIntersecting){
+        setStepper(+en.target.dataset.step);
+      }
+    });
+  }, { rootMargin:"-35% 0px -45% 0px" });
+  document.querySelectorAll("[data-step]").forEach(el => {
+    if(el.id !== "stepper" && !el.classList.contains("st")) io.observe(el);
+  });
+}
+
+/* ---------------- 扫码登录 ----------------
+   浏览器不直接碰 NapCat：轮询启动器的 /api/qr/poll，
+   启动器负责拿凭据、取二维码、查状态。 */
+let lastWebui = "";   /* 启动完成后记录 NapCat 页面地址，给「打开管理页」用 */
+let qrPollId = null;
+let qrLastUrl = "";
+let qrDone = false;
+
+function makeQR(url){
+  /* typeNumber 1~40 逐级试，qrcode-generator 不支持 0=自动 */
+  for(let t = 1; t <= 40; t++){
+    try{
+      const qr = qrcode(t, "M");
+      qr.addData(url);
+      qr.make();
+      return qr;
+    }catch(err){ /* 放不下了，换更大版本 */ }
+  }
+  return null;
+}
+
+function drawQR(url){
+  const qr = makeQR(url);
+  if(!qr) return false;
+  const canvas = $("#qrCanvas");
+  const n = qr.getModuleCount();
+  const cell = Math.max(2, Math.floor(180 / n));
+  const size = cell * n;
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, size, size);
+  ctx.fillStyle = "#1c1420";
+  for(let r = 0; r < n; r++){
+    for(let c = 0; c < n; c++){
+      if(qr.isDark(r, c)) ctx.fillRect(c * cell, r * cell, cell, cell);
+    }
+  }
+  return true;
+}
+
+function setQrMask(mode, text){
+  const mask = $("#qrMask");
+  const label = $("#qrMaskText");
+  mask.classList.toggle("bad", mode === "bad");
+  if(mode === "none"){ mask.classList.remove("show"); return; }
+  /* 图标每次重建，避免「等待→成功」切换时残留转圈样式 */
+  const old = $("#qrMaskIcon");
+  const icon = document.createElement("span");
+  icon.className = "big";
+  icon.id = "qrMaskIcon";
+  if(mode === "wait"){
+    const sp = document.createElement("span");
+    sp.className = "spin";
+    icon.appendChild(sp);
+  }else{
+    icon.textContent = mode === "ok" ? "✓" : (mode === "bad" ? "⚠" : "");
+  }
+  if(old){ old.replaceWith(icon); } else { mask.insertBefore(icon, label); }
+  label.textContent = text || "";
+  mask.classList.add("show");
+}
+
+function setQrStatus(text, ok){
+  const el = $("#qrStatus");
+  el.textContent = text;
+  el.classList.toggle("ok", !!ok);
+}
+
+function stopQrPoll(){
+  if(qrPollId){ clearInterval(qrPollId); qrPollId = null; }
+}
+
+function startQrPoll(){
+  stopQrPoll();
+  qrLastUrl = "";
+  qrDone = false;
+  setQrMask("wait", "");
+  setQrStatus("正在获取二维码…");
+  qrPollId = setInterval(async () => {
+    let d;
+    try{
+      const r = await fetch("/api/qr/poll", { cache:"no-store" });
+      d = await r.json();
+    }catch(err){
+      return;   /* 启动器还在，偶发失败等下一轮 */
+    }
+    if(qrDone) return;
+    if(!d.ok){
+      setQrMask("bad", "暂时连不上 NapCat");
+      setQrStatus(d.error || "NapCat 还没准备好，稍等几秒会自动重试");
+      return;
+    }
+    if(d.isLogin){
+      qrDone = true;
+      stopQrPoll();
+      setQrMask("ok", "登录成功");
+      setQrStatus("登录成功，机器人已上线！去群里 @ 它说句话试试。", true);
+      return;
+    }
+    if(d.qrLoginAccepted || d.phase === "qrcode_scanned" || d.phase === "initializing"){
+      setQrMask("wait", "");
+      setQrStatus("已扫码，请在手机上确认登录");
+      return;
+    }
+    if(d.phase === "reconnecting"){
+      setQrMask("wait", "");
+      setQrStatus("连接中断，正在自动重连…");
+      return;
+    }
+    if(d.loginError){
+      setQrMask("bad", "登录遇到问题");
+      setQrStatus("NapCat 提示：" + d.loginError + "，可以点下面的刷新重试");
+      return;
+    }
+    const url = d.qrcodeurl || "";
+    if(url && url !== qrLastUrl){
+      if(drawQR(url)){
+        qrLastUrl = url;
+        setQrMask("none");
+        setQrStatus("用手机 QQ 扫一扫上面的二维码");
+      }else{
+        setQrMask("bad", "二维码生成失败");
+        setQrStatus("二维码生成失败，可以用下面的链接去 NapCat 原生页面扫码");
+      }
+    }else if(!url){
+      setQrMask("wait", "");
+      setQrStatus("正在等待二维码…");
+    }else{
+      setQrMask("none");
+      setQrStatus("用手机 QQ 扫一扫上面的二维码");
+    }
+  }, 2000);
+}
+
+$("#qrRefresh").addEventListener("click", async () => {
+  const b = $("#qrRefresh");
+  b.disabled = true;
+  b.textContent = "正在刷新…";
+  try{
+    await fetch("/api/qr/refresh", { method:"POST" });
+  }catch(err){ /* 忽略，下一轮轮询会拿到新码 */ }
+  setTimeout(() => {
+    b.disabled = false;
+    b.textContent = "二维码过期了？点我刷新";
+  }, 1200);
+});
+
+$("#goNapcat").addEventListener("click", () => {
+  if(lastWebui) window.open(lastWebui, "_blank");
+});
+
+/* ---------------- 运行日志 ----------------
+   窗口模式下服务输出写进 logs/*.log，这里每秒拉一次末尾。 */
+let consTimer = null;
+
+function renderConsole(lines){
+  const el = $("#consText");
+  const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 24;
+  el.textContent = lines.length ? lines.join("\n") : "（还没有输出，启动后这里会出现日志）";
+  if(stick) el.scrollTop = el.scrollHeight;   /* 用户没往上翻就自动吸底 */
+}
+
+async function pollConsole(){
+  try{
+    const r = await fetch("/api/console", { cache:"no-store" });
+    const d = await r.json();
+    if(d.ok) renderConsole(d.lines || []);
+  }catch(err){ /* 启动器还在，下一轮再说 */ }
+}
+
+$("#consToggle").addEventListener("click", () => {
+  const box = $("#consText");
+  const open = box.classList.toggle("show");
+  const btn = $("#consToggle");
+  if(open){
+    btn.textContent = "▾ 运行日志（机器人核心 / NapCat）";
+    pollConsole();
+    consTimer = setInterval(pollConsole, 1000);
+  }else{
+    btn.textContent = "▸ 运行日志（机器人核心 / NapCat）";
+    if(consTimer){ clearInterval(consTimer); consTimer = null; }
+  }
+});
+
+/* ---------------- 页签：主页 / 终端 ---------------- */
+const tabs = document.querySelectorAll("#tabs .tab");
+let termPaused = false;
+let termTimer = null;
+
+function setPage(page){
+  tabs.forEach(t => t.classList.toggle("active", t.dataset.page === page));
+  $("#termPage").hidden = page !== "term";
+  if(page === "term"){
+    pollTerm();
+    if(!termTimer) termTimer = setInterval(() => { if(!termPaused) pollTerm(); }, 1000);
+  }else if(termTimer){
+    clearInterval(termTimer);
+    termTimer = null;
+  }
+}
+tabs.forEach(t => t.addEventListener("click", () => setPage(t.dataset.page)));
+
+function renderTerm(lines){
+  const el = $("#termText");
+  const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
+  if(lines.length) el.textContent = lines.join("\n");
+  if(stick) el.scrollTop = el.scrollHeight;   /* 看在底部才自动吸底，往上翻了就不打扰 */
+}
+async function pollTerm(){
+  try{
+    const r = await fetch("/api/console", { cache:"no-store" });
+    const d = await r.json();
+    if(d.ok) renderTerm(d.lines || []);
+  }catch(err){ /* 启动器还在，下一轮再说 */ }
+}
+$("#termPause").addEventListener("click", () => {
+  termPaused = !termPaused;
+  $("#termPause").textContent = termPaused ? "▶ 继续" : "⏸ 暂停";
+});
+$("#termClear").addEventListener("click", () => {
+  $("#termText").textContent = "（已清屏 —— 服务日志仍在 程序/logs/ 目录里）";
+});
+
+/* ---------------- 自定义标题栏（仅内嵌窗口） ---------------- */
+function bindTitlebar(){
+  document.body.classList.add("in-app");
+  const api = window.pywebview && window.pywebview.api;
+  if(!api) return;
+  $("#btnMin").addEventListener("click", () => api.minimize());
+  $("#btnMax").addEventListener("click", () => api.toggle_maximize());
+  $("#btnClose").addEventListener("click", () => api.close());
+}
+if(window.pywebview && window.pywebview.api){
+  bindTitlebar();
+}else{
+  window.addEventListener("pywebviewready", bindTitlebar);
+}
+
+/* ---------------- 背景视差（±10px，可降级） ----------------
+   鼠标移动时 .bg 整体轻移；触屏 / 系统关动画 / 老浏览器自动跳过。 */
+(function(){
+  if(!window.matchMedia) return;
+  if(window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  if(window.matchMedia("(pointer: coarse)").matches) return;
+
+  const bg = $("#bg");
+  let tx = 0, ty = 0, cx = 0, cy = 0, running = false;
+
+  function tick(){
+    cx += (tx - cx) * .08;
+    cy += (ty - cy) * .08;
+    bg.style.transform = "translate(" + cx.toFixed(1) + "px," + cy.toFixed(1) + "px)";
+    if(Math.abs(tx - cx) > .2 || Math.abs(ty - cy) > .2){
+      requestAnimationFrame(tick);
+    }else{
+      running = false;
+    }
+  }
+
+  window.addEventListener("mousemove", e => {
+    tx = (e.clientX / window.innerWidth  - .5) * 20;   // ±10px
+    ty = (e.clientY / window.innerHeight - .5) * 20;
+    if(!running){ running = true; requestAnimationFrame(tick); }
+  });
+})();
+
+/* ---------------- 初始化 ---------------- */
+fillVendors();
+fillChips();
+selectVendor("mimo");
+$("#persona").value = DEFAULT_PERSONA;
+autoGrow($("#persona"));
+
+/* 上次填过的内容自动回填。放在默认值之后执行：
+   就算某次只存了一半，没存的字段也保持合理默认。 */
+(function(){
+  const s = loadSaved();
+  if(!s) return;
+  if(s.qq) $("#qq").value = s.qq;
+  if(s.botname) $("#botname").value = s.botname;
+  if(s.model) modelEl.value = s.model;
+  if(s.base) baseEl.value = s.base;
+  if(s.key) $("#key").value = s.key;
+  if(s.persona){
+    $("#persona").value = s.persona;
+    autoGrow($("#persona"));
+  }
+  if(s.vendor && VENDORS.some(v => v.id === s.vendor)){
+    selectVendor(s.vendor, true);   // keepValues：别把回填好的模型/地址覆盖掉
+  }
+})();
+
+$("#toggleKey").addEventListener("click", () => {
+  const k = $("#key"), b = $("#toggleKey");
+  const show = k.type === "password";
+  k.type = show ? "text" : "password";
+  b.textContent = show ? "隐藏" : "显示";
+});
+
+["input","change"].forEach(ev => {
+  $("#cfg").addEventListener(ev, e => {
+    if(e.target.classList) e.target.classList.remove("bad");
+    saveForm();   // 随输入自动保存，下次打开页面不用重新填
+  }, true);
+});
+</script>
+</body>
+</html>
