@@ -1,8 +1,18 @@
 # QQ-AI-BOT
 
-一个开箱即用的 QQ 群聊 AI 机器人：**双击一个快捷方式就能跑**——自动建虚拟环境、装依赖、下载协议端，网页里填好 QQ 号和 API Key，扫码上线。
+一个开箱即用的 QQ 群聊 AI 机器人：**双击一个快捷方式就能跑**——自动建虚拟环境、装依赖、找协议端，网页里填好 QQ 号和 API Key，扫码上线。
 
-> 📖 **完整部署文档、配置说明与踩坑记录见 [程序/README.md](程序/README.md)**
+## 选你的平台
+
+| | 🪟 Windows 版 | 🍎 macOS 版 |
+|---|---|---|
+| 代码目录 | [`Windows/`](Windows/) | [`QQ-AI-Bot-Mac/`](QQ-AI-Bot-Mac/) |
+| 双击入口 | `启动.bat` | `启动.command` |
+| NapCat | 启动器自动下载独立目录 | 随 QQ.app 运行，启动器自动识别 |
+| 详细文档 | [Windows/README.md](Windows/README.md) | [QQ-AI-Bot-Mac/README.md](QQ-AI-Bot-Mac/README.md) |
+| 迁移指南 | —（原生） | [MACOS-迁移指南.md](QQ-AI-Bot-Mac/MACOS-迁移指南.md) |
+
+> 两版共用同一套插件代码（`plugins/ai_chat/`）和网页配置页，功能完全一致，配置格式互通。改插件记得两边都看一眼——以各自目录里的文件为准。
 
 ## 功能一览
 
@@ -39,27 +49,25 @@ NoneBot2（框架）── 收发消息、上下文、限流、工具调用
 
 ## 三步上手
 
-**Windows**：
+**🪟 Windows**：
 
 1. 装 **Python 3.10+**（勾选 *Add Python to PATH*）
-2. 双击 **`程序/启动.bat`**
+2. 双击 **`Windows/启动.bat`**
 3. 网页里填 QQ 号 / 模型厂商 / API Key / 人设 → **测试连接** → **开始部署** → 扫码
 
-没有 Python 也没关系：`程序/启动.bat` 会用中文提示并帮你打开下载页；启动器还会自动修复失效的快捷方式。
+没有 Python 也没关系：`启动.bat` 会用中文提示并帮你打开下载页；启动器还会自动修复失效的快捷方式。
 
-**macOS**：
+**🍎 macOS**：
 
 1. 装好 **QQ.app**（NapCat 随 QQ.app 一起跑，见 [QQ-AI-Bot-Mac/MACOS-迁移指南.md](QQ-AI-Bot-Mac/MACOS-迁移指南.md)）
 2. 双击 **`QQ-AI-Bot-Mac/启动.command`**
 3. 同样的网页配置页 → 保存并启动（服务已做会话隔离，关掉终端照常运行）
 
-两版共用同一套插件代码与网页配置页，配置格式一致。
-
 ## 目录结构
 
 ```
 QQ-BOT/
-├── 程序/                 # Windows 版
+├── Windows/              # 🪟 Windows 版
 │   ├── README.md         # 📖 详细文档（部署 / 配置 / 原理 / 踩坑）
 │   ├── 启动.bat           # 双击入口
 │   ├── launcher.py       # 图形化启动器（建 venv / 装依赖 / 下 NapCat / 拉机器人）
@@ -68,7 +76,8 @@ QQ-BOT/
 │   ├── web/              # 本地配置网页
 │   ├── tests/            # 离线回归测试（不花钱、不碰真 API）
 │   └── stickers/         # 表情包目录（放图即用）
-└── QQ-AI-Bot-Mac/        # macOS 版（同一套插件，NapCat 跑在 QQ.app 里）
+└── QQ-AI-Bot-Mac/        # 🍎 macOS 版（同一套插件，NapCat 跑在 QQ.app 里）
+    ├── README.md         # 📖 macOS 快速上手 + 手动部署
     ├── 启动.command       # 双击入口
     ├── launcher.py       # macOS 适配版启动器（含配置保护：不覆盖已有对接）
     ├── MACOS-迁移指南.md   # 📖 macOS 部署与迁移文档

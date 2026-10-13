@@ -15,7 +15,7 @@ logs/
 .env
 .env.*
 !.env.example
-!程序/.env.example
+!Windows/.env.example
 !QQ-AI-Bot-Mac/.env.example
 config_local.py
 
@@ -31,18 +31,18 @@ desktop.ini
 *.bak
 
 # 备份/预览文件
-程序/launcher-backup.ico
-程序/web/bg-backup.jpg
-程序/web/icon-rounded-preview.png
+Windows/launcher-backup.ico
+Windows/web/bg-backup.jpg
+Windows/web/icon-rounded-preview.png
 
 # Windows 快捷方式（.lnk 内部记录的是本机绝对路径，不能发到 GitHub）
 *.lnk
 
 # 打包产物
-程序/build/
-程序/dist/
-程序/*.spec
-程序/QQ-AI-Bot.exe
-程序/_internal/
+Windows/build/
+Windows/dist/
+Windows/*.spec
+Windows/QQ-AI-Bot.exe
+Windows/_internal/
 QQ-AI-Bot-Mac/web/bg-backup.jpg
 QQ-AI-Bot-Mac/web/icon-rounded-preview.png

@@ -4,9 +4,9 @@
 
 - **对话** —— 在群里 @机器人 + 提问，调用大模型回答
 - **群资源检索** —— 问「群里有没有 XX」，它去翻群文件 / 群相册 / 精华消息
-- **点歌 / B站 / YouTube 搜索 / 分享卡片** —— 详见 [程序/README.md](../程序/README.md) 4.10 节（两版插件代码一致）
+- **点歌 / B站 / YouTube 搜索 / 分享卡片** —— 详见 [Windows/README.md](../Windows/README.md) 4.10 节（两版插件代码一致）
 
-> Windows 版部署文档见 [程序/README.md](../程序/README.md)；本文件侧重 macOS。
+> Windows 版部署文档见 [Windows/README.md](../Windows/README.md)；本文件侧重 macOS。
 
 ---
 
