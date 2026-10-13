@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import json
 import random
 import re
 import time
@@ -54,7 +55,9 @@ from . import (
     interact,
     media,
     members,
+    memory,
     music,
+    proactive,
     resource_index,
     stickers,
     vision,
@@ -126,6 +129,77 @@ _history: DefaultDict[int, Deque[dict]] = defaultdict(
 _last_call: Dict[int, float] = {}
 _usage: DefaultDict[int, int] = defaultdict(int)
 _usage_day: str = date.today().isoformat()
+
+# ---------- 人设覆盖（管理员 /人设 指令的存储层）----------
+# 存 data/persona.json：{"groups": {"群号": "自定义人设文本"}}
+_PERSONA_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "data" / "persona.json"
+)
+
+
+def _assistant_iron_rules() -> str:
+    """从默认人设里抽出「铁律」段落（防止编造文件名等约束）。
+
+    管理员换人设只换性格，铁律必须保留——群助手功能大于角色扮演，
+    换成人设后机器人照样不能编造文件名、不能混淆发言人。
+    抽取方式是按「【铁律」分段，跟着默认人设走，改默认提示词不用改这里。
+    """
+    if "【铁律" not in cfg.ai_system_prompt:
+        return ""
+    return "\n\n【铁律 —— 优先级高于上面所有性格设定】" + cfg.ai_system_prompt.split(
+        "【铁律", 1
+    )[1]
+
+
+def _persona_for(group_id: int) -> str:
+    """本群实际生效的人设：管理员设置过覆盖就用「覆盖 + 铁律」，否则用默认。"""
+    try:
+        data = json.loads(_PERSONA_PATH.read_text(encoding="utf-8"))
+        override = ((data.get("groups") or {}).get(str(group_id)) or "").strip()
+    except (OSError, ValueError):
+        override = ""
+    if not override:
+        return cfg.ai_system_prompt
+    return override + _assistant_iron_rules()
+
+
+def _persona_source(group_id: int) -> tuple[str, int]:
+    """人设来源描述（给 /人设 看的）：(来源, 自定义文本长度)。"""
+    try:
+        data = json.loads(_PERSONA_PATH.read_text(encoding="utf-8"))
+        override = ((data.get("groups") or {}).get(str(group_id)) or "").strip()
+    except (OSError, ValueError):
+        override = ""
+    return ("本群自定义" if override else "默认（吉普莉尔）"), len(override)
+
+
+def _set_persona(group_id: int, text: str) -> None:
+    """写入/清除本群人设覆盖；text 为空串表示清除。"""
+    try:
+        data = json.loads(_PERSONA_PATH.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            data = {}
+    except (OSError, ValueError):
+        data = {}
+    groups = data.setdefault("groups", {})
+    if text:
+        groups[str(group_id)] = text
+    else:
+        groups.pop(str(group_id), None)
+    _PERSONA_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _PERSONA_PATH.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def _is_bot_admin(bot: Bot, event: GroupMessageEvent) -> bool:
+    """群主 / 群管理员 / 超级用户（.env 里 SUPERUSERS）都有机器人控制权。"""
+    if event.sender.role in ("owner", "admin"):
+        return True
+    try:
+        return str(event.user_id) in {str(s) for s in bot.config.superusers}
+    except Exception:  # noqa: BLE001
+        return False
 
 # 出现这些词就认为用户在问群资源的事
 RESOURCE_KEYWORDS = (
@@ -714,13 +788,20 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
         {
             "role": "system",
             "content": f"今天的日期是 {today.isoformat()}（星期{weekday}）。"
-            "涉及时间的问题一律以此为准。\n\n" + cfg.ai_system_prompt,
+            "涉及时间的问题一律以此为准。\n\n" + _persona_for(group_id),
         }
     ]
 
     context = await _build_context(bot, group_id, text, at_qqs, event.self_id)
     if context:
         messages.append({"role": "system", "content": context})
+
+    # 长期记忆注入：/记住 存下的事实，按与本条消息的相关性挑出来给模型。
+    # 放在检索结果之后、历史之前——记忆是「明确交代过的事」，优先级应高于闲聊历史。
+    if cfg.ai_memory_enabled:
+        mem_ctx = memory.describe(group_id, text, cfg.ai_memory_max_results)
+        if mem_ctx:
+            messages.append({"role": "system", "content": mem_ctx})
 
     messages.extend(_history[group_id])
 
@@ -1162,11 +1243,163 @@ reset = on_command("reset", priority=10, block=True)
 
 
 @reset.handle()
-async def handle_reset(event: GroupMessageEvent) -> None:
-    if event.sender.role not in ("owner", "admin"):
+async def handle_reset(bot: Bot, event: GroupMessageEvent) -> None:
+    if not _is_bot_admin(bot, event):
         await reset.finish("只有群主或管理员可以清空上下文")
     _history.pop(event.group_id, None)
     await reset.finish("本群上下文已清空")
+
+
+# ---------------------------------------------------------------- 群助手指令（帮助 / 状态 / 长期记忆 / 人设）
+
+help_cmd = on_command("help", aliases={"帮助", "功能", "菜单"}, priority=10, block=True)
+
+HELP_TEXT = (
+    "我是本群的 AI 助手，常用功能：\n"
+    "· @我 + 任意问题 —— 对话（带图片也能看图说话）\n"
+    "· @我 + 图片 + 说「存相册」—— 收进群相册\n"
+    "· @我 + 来首 XXX —— 点歌分享\n"
+    "· /文件 XXX —— 查群文件在哪；/文档 XXX —— 查文件内容写了什么\n"
+    "· /精华 XXX —— 翻群精华；/历史 XXX —— 查刚才谁说过什么\n"
+    "· /成员 XXX —— 查群成员资料\n"
+    "· /记住 XXX —— 让我长期记住一件事；/记忆 —— 看我记住了什么\n"
+    "· /状态 —— 看今天的对话/联网/主动发言额度\n"
+    "· /人设 —— 看当前人设（管理员可换可恢复）\n"
+    "· /reset —— 管理员清空本群对话上下文\n"
+    "· /帮助 —— 显示本清单\n"
+    "另有管理类命令（/踢 /禁言 /撤回 /设精华 等），需要群主给我管理员身份，"
+    "发 /踢 可看用法。"
+)
+
+
+@help_cmd.handle()
+async def handle_help() -> None:
+    await help_cmd.finish(HELP_TEXT)
+
+
+status_cmd = on_command("status", aliases={"状态", "额度"}, priority=10, block=True)
+
+
+@status_cmd.handle()
+async def handle_status(event: GroupMessageEvent) -> None:
+    _roll_day_if_needed()
+    group_id = event.group_id
+    search = websearch.snapshot(cfg.ai_web_search_daily_limit)
+    pro = proactive.stats(group_id)
+    rounds = len(_history.get(group_id, ()))
+    persona_src, persona_len = _persona_source(group_id)
+    cooldown_left = max(
+        0, int(cfg.ai_proactive_cooldown - (time.time() - pro["last"]))
+    )
+    lines = [
+        f"本群状态（{date.today().isoformat()}）",
+        f"　对话额度：今天已用 {_usage.get(group_id, 0)} / {cfg.ai_daily_limit} 次",
+        f"　上下文：{rounds} 条（约 {rounds // 2} 轮，上限 {cfg.ai_history_rounds} 轮）",
+        f"　联网额度：已用 {search['used']} / {search['limit']} 次（剩 {search['remaining']}）",
+        f"　长期记忆：{memory.count(group_id)} 条（/记忆 查看）",
+        f"　主动发言：今天已用 {pro['used']} / {cfg.ai_proactive_daily_limit} 次",
+        f"　　下次可触发：{'冷却中，剩约 %d 分钟' % (cooldown_left // 60) if cooldown_left > 0 else '随时'}",
+        f"　人设：{persona_src}"
+        + (f"（{persona_len} 字）" if persona_len else ""),
+    ]
+    await status_cmd.finish("\n".join(lines))
+
+
+remember_cmd = on_command("remember", aliases={"记住", "记一下"}, priority=10, block=True)
+
+
+@remember_cmd.handle()
+async def handle_remember(event: GroupMessageEvent, args: Message = CommandArg()) -> None:
+    if not cfg.ai_memory_enabled:
+        await remember_cmd.finish("长期记忆功能当前是关闭的")
+    text = args.extract_plain_text().strip()
+    if not text:
+        await remember_cmd.finish("用法：/记住 XXX（比如 /记住 张三的生日是 1 月 1 日）")
+    if len(text) > 120:
+        await remember_cmd.finish("太长了，一条记忆控制在 120 字以内，拆成几条来记吧")
+    result = memory.add(
+        event.group_id,
+        text,
+        by=_speaker_label(event),
+        max_entries=cfg.ai_memory_max_per_group,
+    )
+    if result == "dup":
+        await remember_cmd.finish("这条我已经记着了，不用重复教～")
+    await remember_cmd.finish(
+        f"记住了（第 {memory.count(event.group_id)} 条）。问相关问题的时候我会想起来的"
+    )
+
+
+memory_cmd = on_command("memory", aliases={"记忆"}, priority=10, block=True)
+
+
+@memory_cmd.handle()
+async def handle_memory(event: GroupMessageEvent) -> None:
+    await memory_cmd.finish(memory.list_text(event.group_id))
+
+
+forget_cmd = on_command("forget", aliases={"忘记", "忘了"}, priority=10, block=True)
+
+
+@forget_cmd.handle()
+async def handle_forget(
+    bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()
+) -> None:
+    text = args.extract_plain_text().strip()
+    if not text:
+        await forget_cmd.finish("用法：/忘记 关键词（删掉包含这个词的记忆）")
+    if not _is_bot_admin(bot, event):
+        await forget_cmd.finish("只有群主或管理员可以删除记忆，防止有人乱删别人记的东西")
+    if text in ("全部", "清空", "所有"):
+        removed = memory.clear(event.group_id)
+        await forget_cmd.finish(f"已清空全部 {removed} 条记忆")
+    removed = memory.remove(event.group_id, text)
+    if removed:
+        await forget_cmd.finish(f"已删掉 {removed} 条包含「{text}」的记忆")
+    await forget_cmd.finish(f"没有找到包含「{text}」的记忆，/记忆 可以看现存列表")
+
+
+persona_cmd = on_command("persona", aliases={"人设"}, priority=10, block=True)
+
+
+@persona_cmd.handle()
+async def handle_persona(
+    bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()
+) -> None:
+    text = args.extract_plain_text().strip()
+
+    if not text:
+        src, length = _persona_source(event.group_id)
+        current = _persona_for(event.group_id)
+        preview = current[:100] + ("…" if len(current) > 100 else "")
+        await persona_cmd.finish(
+            f"当前人设：{src}" + (f"（{length} 字）" if length else "") + f"\n开头是：{preview}\n"
+            "管理员可发 /人设 新人设文本 换人设；/人设 恢复 回默认。"
+            "注意：换人设只换性格，资源检索的铁律会自动保留。"
+        )
+
+    if not cfg.ai_persona_override_enabled:
+        await persona_cmd.finish("人设覆盖功能当前是关闭的（AI_PERSONA_OVERRIDE_ENABLED=false）")
+    if not _is_bot_admin(bot, event):
+        await persona_cmd.finish("只有群主或管理员可以换人设")
+
+    if text in ("恢复", "重置", "默认", "还原"):
+        _set_persona(event.group_id, "")
+        await persona_cmd.finish("已恢复默认人设（吉普莉尔）")
+
+    if len(text) < cfg.ai_persona_min_len:
+        await persona_cmd.finish(
+            f"新人设太短了，至少 {cfg.ai_persona_min_len} 字——"
+            "把性格、说话方式描述清楚，效果才稳定"
+        )
+    if len(text) > 2000:
+        await persona_cmd.finish("人设最长 2000 字，精简一点反而效果更好")
+
+    _set_persona(event.group_id, text)
+    await persona_cmd.finish(
+        f"本群人设已更新（{len(text)} 字），立刻生效。\n"
+        "资源检索铁律已自动附加，我不会因此开始编造文件名～"
+    )
 
 
 # ---------------------------------------------------------------- 新成员入群欢迎

@@ -248,3 +248,40 @@ class Config(BaseModel):
     ai_private_daily_limit: int = 100
     # 私聊保留的对话轮数
     ai_private_history_rounds: int = 8
+
+    # ---------- 长期记忆（群助手核心功能）----------
+    # 「/记住 XXX」把事实写进 data/group_memory.json，对话时自动注入上下文。
+    # 和对话历史（8 轮滚动就忘）不同，这里存的是长期事实，重启不丢。
+    # 刻意用 JSON + 关键词匹配而不用向量库：条目通常几十条以内够用了，
+    # 引入向量库会让部署从「双击就能跑」变成「还得装依赖」，违背项目定位。
+    ai_memory_enabled: bool = True
+    # 每个群最多存多少条（超出后挤掉最旧的）
+    ai_memory_max_per_group: int = 50
+    # 每轮对话最多注入几条记忆（注入太多反而稀释注意力）
+    ai_memory_max_results: int = 8
+
+    # ---------- 人设覆盖（管理员专用）----------
+    # 管理员 /人设 新人设文本 可以给本群单独换人设，/人设 恢复 回到默认。
+    # 覆盖存 data/persona.json，重启不丢。群助手功能不受影响：
+    # 资源检索铁律会自动追加到自定义人设后面，不会因为换人设而开始编造文件名。
+    ai_persona_override_enabled: bool = True
+    # 自定义人设的最小长度（防止手滑把「好」存成人设）
+    ai_persona_min_len: int = 20
+
+    # ---------- 主动发言 ----------
+    # 群里没 @ 机器人、但聊天内容命中关键词时，按概率插一句话。
+    # 这是主动发言，和入群欢迎一样是 QQ 风控最敏感的行为，限流从严：
+    # 关键词命中 → 概率 → 同群冷却 → 每群每日上限，四道闸门全过才开口。
+    ai_proactive_enabled: bool = True
+    # 触发词：消息包含任一词才可能触发。想更克制就只留「机器人」一个词
+    ai_proactive_keywords: tuple[str, ...] = (
+        "机器人", "人工智能", "AI", "吉普莉尔", "大模型", "语言模型",
+    )
+    # 命中关键词后实际回复的概率
+    ai_proactive_probability: float = 0.35
+    # 同一群两次主动发言的最小间隔（秒）
+    ai_proactive_cooldown: float = 300.0
+    # 每群每天最多主动发言几次
+    ai_proactive_daily_limit: int = 12
+    # 消息至少多长才考虑触发（防止「AI」两个字在口水消息里误命中）
+    ai_proactive_min_len: int = 6
