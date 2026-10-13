@@ -209,7 +209,7 @@ body{
 label{display:block;font-size:12.5px;color:var(--text-dim);margin-bottom:7px;font-weight:500;letter-spacing:.2px}
 label .opt{color:var(--text-faint);font-weight:400;font-size:11.5px}
 
-input,textarea{
+input,textarea,select{
   width:100%;font-family:var(--font);font-size:14px;color:var(--text);
   background:var(--glass-field);
   border:1px solid var(--line);
@@ -218,19 +218,34 @@ input,textarea{
   transition:border-color .2s,background .2s,box-shadow .2s;
   outline:none;
 }
+select{
+  appearance:none;-webkit-appearance:none;cursor:pointer;
+  background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' fill='none'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%23ffffff' stroke-opacity='.6' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 13px center;
+}
+select option{background:#1c1420;color:#fff}
 textarea{
   height:auto;min-height:120px;padding:12px 13px;line-height:1.7;
   /* 高度由 JS 跟着内容自动撑开（autoGrow），手动拖拽会打架 */
   resize:none;overflow-y:auto;font-size:13.5px;
 }
 input::placeholder,textarea::placeholder{color:var(--text-faint)}
-input:hover,textarea:hover{border-color:var(--line-strong)}
-input:focus,textarea:focus{
+input:hover,textarea:hover,select:hover{border-color:var(--line-strong)}
+input:focus,textarea:focus,select:focus{
   border-color:var(--accent);
   background:rgba(0,0,0,.24);
   box-shadow:0 0 0 5px var(--accent-faint);   /* focus 外发光 */
 }
 input.bad,textarea.bad{border-color:rgba(255,122,138,.85);box-shadow:0 0 0 5px rgba(255,122,138,.14)}
+
+/* ---------- 腾讯文档（可选）面板 ---------- */
+.docs-hint{
+  font-size:12px;color:var(--text-faint);line-height:1.7;
+  margin:-6px 0 14px;
+}
+.docs-hint b{color:var(--text-dim);font-weight:500}
+.docs-row{display:flex;gap:9px;margin-top:4px}
+.docs-row button{flex:1;height:40px;font-size:12.5px}
 
 /* ---------- tooltip：说明收纳成 ⓘ ---------- */
 .tip{
@@ -654,7 +669,42 @@ body.in-app .stage{padding-top:76px}
         </div>
       </section>
 
+      <!-- 可选：腾讯文档权限（默认收起） -->
+      <section class="group" id="grp-docs" hidden>
+        <div class="gtitle">腾讯文档（可选）</div>
+        <p class="docs-hint">
+          配置后群里发的链接会<b>自动收藏进腾讯文档 / 表格</b>（能识别表格表头按列写入）。
+          凭证去 <b>docs.qq.com/open</b> 首页「开发者信息」复制。不填也完全不影响其他功能。
+        </p>
+        <div class="field">
+          <label for="docsClientId">Client ID<span class="opt">应用ID</span></label>
+          <input id="docsClientId" autocomplete="off" placeholder="32 位十六进制">
+        </div>
+        <div class="field">
+          <label for="docsToken">Access Token<span class="opt">30 天有效，过期去开放平台点「重置」</span></label>
+          <input id="docsToken" autocomplete="off" placeholder="eyJhbGciOi...">
+        </div>
+        <div class="field">
+          <label for="docsOpenId">Open ID</label>
+          <input id="docsOpenId" autocomplete="off" placeholder="32 位十六进制">
+        </div>
+        <div class="field">
+          <label for="docsMode">链接收录过滤<span class="tip" tabindex="0" data-tip="whitelist：只收白名单域名的链接进文档（内置 B站/GitHub/知乎等，群内可用指令调整）；all：全部同步；manual：从不自动写，只手动收录。本地收藏库不受影响，永远全收。">?</span></label>
+          <select id="docsMode">
+            <option value="whitelist">白名单模式（推荐）</option>
+            <option value="all">全部同步</option>
+            <option value="manual">全手动（只收录我指定的）</option>
+          </select>
+        </div>
+        <div class="docs-row">
+          <button type="button" class="ghost" id="docsTest">测试凭证</button>
+          <button type="button" class="ghost" id="docsSave">保存文档参数</button>
+        </div>
+        <div class="conn-result" id="docsResult"></div>
+      </section>
+
       <div class="actions">
+        <button type="button" class="ghost" id="docsToggle">▸ 腾讯文档权限（可选，不填不影响使用）</button>
         <button type="submit" class="primary" id="go">保存并启动</button>
         <button type="button" class="ghost" id="test">测试连接（完整对话验证）</button>
       </div>
@@ -1455,6 +1505,96 @@ $("#toggleKey").addEventListener("click", () => {
   const show = k.type === "password";
   k.type = show ? "text" : "password";
   b.textContent = show ? "隐藏" : "显示";
+});
+
+/* ---------------- 腾讯文档参数（可选，独立于启动流程） ---------------- */
+const docsResult = $("#docsResult");
+
+function setDocsStatus(ok, msg){
+  docsResult.className = "conn-result show " + (ok ? "ok" : "bad");
+  docsResult.textContent = msg;
+}
+
+$("#docsToggle").addEventListener("click", () => {
+  const p = $("#grp-docs");
+  const show = p.hidden;
+  p.hidden = !show;
+  $("#docsToggle").textContent =
+    (show ? "▾" : "▸") + " 腾讯文档权限（可选，不填不影响使用）";
+});
+
+/* 打开面板时从启动器回填 .env 里已保存的值（凭证只在你本机） */
+$("#docsToggle").addEventListener("click", async () => {
+  if($("#grp-docs").hidden) return;
+  try{
+    const r = await fetch("/api/tdocs", { cache:"no-store" });
+    const d = await r.json();
+    if(d.ok && d.values){
+      const v = d.values;
+      if(!$("#docsClientId").value) $("#docsClientId").value = v.AI_DOCS_CLIENT_ID || "";
+      if(!$("#docsToken").value)    $("#docsToken").value    = v.AI_DOCS_ACCESS_TOKEN || "";
+      if(!$("#docsOpenId").value)   $("#docsOpenId").value   = v.AI_DOCS_OPEN_ID || "";
+      $("#docsMode").value = v.AI_DOCS_SYNC_MODE || "whitelist";
+    }
+  }catch(e){ /* 启动器不在线就算了 */ }
+});
+
+function docsCollect(){
+  return {
+    AI_DOCS_CLIENT_ID:  $("#docsClientId").value.trim(),
+    AI_DOCS_ACCESS_TOKEN: $("#docsToken").value.trim(),
+    AI_DOCS_OPEN_ID:    $("#docsOpenId").value.trim(),
+    AI_DOCS_SYNC_MODE:  $("#docsMode").value
+  };
+}
+
+$("#docsSave").addEventListener("click", async () => {
+  const btn = $("#docsSave");
+  btn.disabled = true;
+  try{
+    const r = await fetch("/api/tdocs", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(docsCollect())
+    });
+    const d = await r.json();
+    if(d.ok){
+      const has = docsCollect().AI_DOCS_CLIENT_ID && docsCollect().AI_DOCS_ACCESS_TOKEN;
+      setDocsStatus(true, has
+        ? "✓ 已保存到 .env。机器人正在运行的话，重启后生效。"
+        : "✓ 已清空文档凭证（链接收藏仍会保存到本地，只是不再同步在线文档）。");
+    }else{
+      setDocsStatus(false, "✗ 保存失败：" + (d.error || "未知错误"));
+    }
+  }catch(err){
+    setDocsStatus(false, "✗ 启动器不在线（" + err.message + "）");
+  }
+  btn.disabled = false;
+});
+
+$("#docsTest").addEventListener("click", async () => {
+  const btn = $("#docsTest");
+  const c = docsCollect();
+  btn.disabled = true; btn.textContent = "测试中…";
+  setDocsStatus(true, "正在用这三样凭证请求腾讯文档接口…");
+  try{
+    const r = await fetch("/api/tdocs/test", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(c)
+    });
+    const d = await r.json();
+    if(d.ok){
+      setDocsStatus(true, d.count
+        ? `✓ 凭证有效！能在你的云盘里看到 ${d.count} 个文件（${(d.names || []).join("、")}…）`
+        : "✓ 凭证有效！（云盘列表为空或还没授权任何文件）");
+    }else{
+      setDocsStatus(false, "✗ " + (d.error || "凭证无效"));
+    }
+  }catch(err){
+    setDocsStatus(false, "✗ 启动器不在线（" + err.message + "）");
+  }
+  btn.disabled = false; btn.textContent = "测试凭证";
 });
 
 ["input","change"].forEach(ev => {

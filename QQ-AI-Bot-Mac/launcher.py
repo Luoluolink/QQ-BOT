@@ -771,6 +771,118 @@ def write_env(form: dict, old: dict) -> dict:
     return env
 
 
+# ---------------------------------------------------------------- 腾讯文档参数
+#
+# 可选功能：群里发链接自动收藏进腾讯文档/表格。三样凭证去 docs.qq.com/open
+# 首页「开发者信息」直接复制（个人开发者直发模式，没有 Client Secret）。
+# 不填完全不影响其他功能 —— 插件里 configured() 检测不到凭证会静默跳过。
+
+DOCS_ENV_KEYS = (
+    "AI_DOCS_CLIENT_ID",
+    "AI_DOCS_ACCESS_TOKEN",
+    "AI_DOCS_OPEN_ID",
+    "AI_DOCS_SYNC_MODE",
+    "AI_DOCS_DOMAIN_WHITELIST",
+    "AI_DOCS_DOMAIN_BLACKLIST",
+)
+
+DOCS_MODES = ("all", "whitelist", "manual")
+
+
+def save_docs_env(params: dict) -> dict:
+    """把腾讯文档参数写进 .env，只动这几个键，其余行原样保留。
+
+    空值也会写 `KEY=` 占位（清除凭证 = 留空），保证「清空保存」真的清掉。
+    """
+    updates: dict[str, str] = {}
+    for key in DOCS_ENV_KEYS:
+        val = str(params.get(key) or "").strip().replace("\n", " ")
+        if key == "AI_DOCS_SYNC_MODE" and val and val not in DOCS_MODES:
+            val = "whitelist"
+        updates[key] = val
+
+    lines = (
+        ENV_FILE.read_text(encoding="utf-8").splitlines()
+        if ENV_FILE.exists()
+        else []
+    )
+    seen: set[str] = set()
+    out: list[str] = []
+    for line in lines:
+        m = re.match(r"^([A-Z_]+)=", line)
+        if m and m.group(1) in updates:
+            key = m.group(1)
+            seen.add(key)
+            out.append(f"{key}={updates[key]}")
+        else:
+            out.append(line)
+    if len(seen) < len(DOCS_ENV_KEYS):
+        if out and out[-1].strip():
+            out.append("")
+        out.append("# ---- 腾讯文档 OpenAPI（群链接收藏自动收录进在线文档/表格）----")
+        for key in DOCS_ENV_KEYS:
+            if key not in seen:
+                out.append(f"{key}={updates[key]}")
+    ENV_FILE.write_text("\n".join(out) + "\n", encoding="utf-8")
+    return updates
+
+
+def docs_test_conn(client_id: str, access_token: str, open_id: str) -> dict:
+    """拿三件套真打一次官方接口，验证凭证是否有效。
+
+    用的是云盘列表接口（响应小、不依赖任何文档权限）；
+    凭证有效时哪怕一个文件都没有也会返回 ok。
+    """
+    missing = [
+        name
+        for name, val in (
+            ("Client ID", client_id),
+            ("Access Token", access_token),
+            ("Open ID", open_id),
+        )
+        if not val
+    ]
+    if missing:
+        return {"ok": False, "error": "还差：" + "、".join(missing)}
+
+    req = urllib.request.Request(
+        "https://docs.qq.com/openapi/drive/v2/filter",
+        headers={
+            "Access-Token": access_token,
+            "Client-Id": client_id,
+            "Open-Id": open_id,
+        },
+    )
+    # 本机直连腾讯，不该走系统代理
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(req, timeout=15) as resp:
+            body = json.loads(resp.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            raw = json.loads(exc.read().decode("utf-8", "replace"))
+            if isinstance(raw, dict):
+                detail = str(raw.get("msg") or raw.get("message") or "")
+        except Exception:  # noqa: BLE001
+            pass
+        hint = "（Access Token 不对或已过期，去开放平台核对）" if exc.code in (401, 403) else ""
+        return {"ok": False, "error": f"HTTP {exc.code} {detail} {hint}".strip()}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"请求失败：{exc}"}
+
+    # 腾讯的风格：凭证错了也是 HTTP 200，错误在 body 的 ret/msg 里
+    ret = body.get("ret", body.get("code", 0))
+    if ret not in (0, None):
+        msg = str(body.get("msg") or body.get("message") or "未知错误")
+        hint = "（Access Token 不对或已过期，去开放平台核对）" if ret == 10301 else ""
+        return {"ok": False, "error": f"{msg}（ret {ret}）{hint}".strip()}
+
+    files = ((body.get("data") or {}).get("list")) or []
+    names = [str(f.get("title") or "") for f in files[:3] if f.get("title")]
+    return {"ok": True, "count": len(files), "names": names}
+
+
 # ---------------------------------------------------------------- NapCat
 
 
@@ -1690,6 +1802,14 @@ class WebHandler(BaseHTTPRequestHandler):
             self._json(console_tail())
             return
 
+        if path == "/api/tdocs":
+            env = read_env()
+            self._json({
+                "ok": True,
+                "values": {k: env.get(k, "") for k in DOCS_ENV_KEYS},
+            })
+            return
+
         if path in ("/", "/index.html"):
             path = "/index.html"
 
@@ -1718,6 +1838,24 @@ class WebHandler(BaseHTTPRequestHandler):
         if path == "/api/test":
             self._json(
                 test_model(form.get("base", ""), form.get("key", ""), form.get("model", ""))
+            )
+            return
+
+        if path == "/api/tdocs":
+            save_docs_env(form)
+            self._json({
+                "ok": True,
+                "note": "已写入 .env；机器人正在运行的话，重启后生效",
+            })
+            return
+
+        if path == "/api/tdocs/test":
+            self._json(
+                docs_test_conn(
+                    str(form.get("AI_DOCS_CLIENT_ID") or "").strip(),
+                    str(form.get("AI_DOCS_ACCESS_TOKEN") or "").strip(),
+                    str(form.get("AI_DOCS_OPEN_ID") or "").strip(),
+                )
             )
             return
 
