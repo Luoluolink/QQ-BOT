@@ -54,7 +54,16 @@ def build() -> None:
 
 
 def assemble() -> None:
+    # 重建前把用户数据（.env 配置、已下载的 napcat）移到旁边，装完再放回来，
+    # 否则每次重新打包都会把用户填好的配置和 120MB 的 NapCat 一起删掉。
+    keep: dict[str, Path] = {}
     if APP_DIR.exists():
+        for name in (".env", "napcat"):
+            src = APP_DIR / name
+            if src.exists():
+                dest = APP_DIR.with_name(APP_DIR.name + "_keep_" + name)
+                shutil.move(str(src), str(dest))
+                keep[name] = dest
         shutil.rmtree(APP_DIR)
     APP_DIR.mkdir(parents=True)
 
@@ -74,6 +83,16 @@ def assemble() -> None:
     for name in SHIP_DIRS:
         shutil.copytree(HERE / name, APP_DIR / name)
 
+    # 用户数据放回原位
+    for name, dest in keep.items():
+        target = APP_DIR / name
+        if target.exists():  # 极端情况：新包里自带同名文件，以用户数据为准
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+        shutil.move(str(dest), str(target))
+
     print(f":: 发行目录已就绪：{APP_DIR}")
 
 
@@ -81,10 +100,19 @@ def make_zip() -> Path:
     zip_path = RELEASE / "QQBot-windows-x64.zip"
     if zip_path.exists():
         zip_path.unlink()
+
+    def excluded(rel: str) -> bool:
+        """分发包不含用户数据：.env（有密钥）与 napcat/（120MB，首启自动下载）。"""
+        p = rel.replace("\\", "/")
+        return p == "QQBot/.env" or p.startswith("QQBot/napcat/")
+
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         for path in sorted(APP_DIR.rglob("*")):
             if path.is_file():
-                zf.write(path, path.relative_to(APP_DIR.parent))
+                rel = str(path.relative_to(APP_DIR.parent))
+                if excluded(rel):
+                    continue
+                zf.write(path, rel)
     size_mb = zip_path.stat().st_size / 1024 / 1024
     print(f":: 压缩包：{zip_path}（{size_mb:.1f} MB）")
     return zip_path

@@ -4,10 +4,15 @@
 例如 ai_api_key 对应 AI_API_KEY，ai_daily_limit 对应 AI_DAILY_LIMIT。
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Config(BaseModel):
+    # .env 里不带引号的纯数字（AI_API_KEY=1、AI_BOT_NAME=9497）会被 nonebot
+    # 解析成 int，默认的 str 字段会直接 ValidationError 让整个插件加载失败。
+    # coerce_numbers_to_str 让这类值自动转成字符串，宁可宽容也别一票否决。
+    model_config = ConfigDict(coerce_numbers_to_str=True)
+
     # ---------- 模型接入 ----------
     ai_api_base: str = "https://api.xiaomimimo.com/v1"
     ai_api_key: str = ""

@@ -41,3 +41,8 @@ desktop.ini
 build_exe/
 dist_exe/
 release/
+
+# 安装器构建产物
+build_installer/
+dist_installer/
+_setup_test/

@@ -581,6 +581,46 @@ def new_token() -> str:
     return "qbot_" + secrets.token_hex(8)
 
 
+def dotenv_unquote(text: str) -> str:
+    """dotenv_value 的逆操作：去掉外层引号并还原转义。
+
+    python-dotenv 在双引号值里会还原 \\n、\\t、\\" 与 \\\\，
+    这里按同样的规则还原，保证写进 .env 的人设读回来和当初输入一致。
+    """
+    t = text.strip()
+    if len(t) >= 2 and t[0] == '"' and t[-1] == '"':
+        t = t[1:-1]
+        out: list[str] = []
+        i = 0
+        while i < len(t):
+            ch = t[i]
+            if ch == "\\" and i + 1 < len(t):
+                nxt = t[i + 1]
+                out.append({"n": "\n", "t": "\t", '"': '"', "\\": "\\"}.get(nxt, "\\" + nxt))
+                i += 2
+            else:
+                out.append(ch)
+                i += 1
+        t = "".join(out)
+    return t
+
+
+def saved_config() -> dict:
+    """读取 .env 里上次保存的配置，给网页面板回填用。
+
+    键名与 ENV_HEADER 写入的一致；都取不到就返回空串，网页端自行留空。
+    """
+    env = read_env()
+    return {
+        "qq": env.get("BOT_QQ", ""),
+        "botname": env.get("AI_BOT_NAME", ""),
+        "base": env.get("AI_API_BASE", ""),
+        "key": env.get("AI_API_KEY", ""),
+        "model": env.get("AI_MODEL", ""),
+        "persona": dotenv_unquote(env.get("AI_SYSTEM_PROMPT", "")),
+    }
+
+
 def dotenv_quote(text: str) -> str:
     """把多行文本转成 dotenv 能读回来的双引号形式。
 
@@ -727,8 +767,18 @@ def write_env(form: dict, old: dict) -> dict:
         else "true"
     )
 
+    # 机器人核心的监听端口：沿用 .env 里已有的；没有、或已被别的程序占着
+    # （比如 Steam webhelper 恰好蹲在 8080，NapCat 反连它会得到 404），
+    # 就自动找一个空闲端口。NapCat 的反连地址由 write_napcat_config 按
+    # 同一份 env 写入，两边永远一致。
+    port_old = (old.get("PORT") or "").strip()
+    if port_old.isdigit() and not port_in_use(int(port_old)):
+        port = int(port_old)
+    else:
+        port = free_port(PORT_NONEBOT)
+
     text = ENV_HEADER.format(
-        port=PORT_NONEBOT,
+        port=port,
         token=token,
         qq=(form.get("qq") or "").strip(),
         base=base,
@@ -1277,6 +1327,11 @@ class WebHandler(BaseHTTPRequestHandler):
         if path == "/api/progress":
             with STATE_LOCK:
                 self._json(dict(STATE))
+            return
+
+        if path == "/api/config":
+            # 上次保存的配置，网页加载时回填表单（首次使用时字段为空）
+            self._json(saved_config())
             return
 
         if path in ("/", "/index.html"):
