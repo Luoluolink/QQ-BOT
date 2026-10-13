@@ -47,12 +47,15 @@ from openai import AsyncOpenAI
 from . import (
     admin,
     album,
+    album_index,
     crawler,
+    docsync,
     essence,
     filetext,
     forward,
     history,
     interact,
+    linkarchive,
     media,
     members,
     memory,
@@ -434,6 +437,20 @@ async def _build_crawler_context(bot: Bot, group_id: int, text: str) -> str:
     )
 
 
+async def _build_albumidx_context(bot: Bot, group_id: int, text: str) -> str:
+    """相册内容索引：用户在找某张图时给出相册位置。纯 JSON 查询，开销可忽略。"""
+    if not cfg.ai_album_index_enabled:
+        return ""
+    return album_index.describe(group_id, text)
+
+
+async def _build_linkarchive_context(bot: Bot, group_id: int, text: str) -> str:
+    """链接收藏库：用户在翻以前发过的链接时给出相关收藏。纯 JSON 查询。"""
+    if not cfg.ai_linkarchive_enabled:
+        return ""
+    return linkarchive.describe(group_id, text)
+
+
 async def _build_context(
     bot: Bot, group_id: int, text: str, at_qqs: list[int], self_id: int
 ) -> str:
@@ -457,6 +474,8 @@ async def _build_context(
         _build_resource_context,
         _build_essence_context,
         _build_crawler_context,
+        _build_albumidx_context,
+        _build_linkarchive_context,
     ):
         try:
             block = await builder(bot, group_id, text)
@@ -1263,6 +1282,9 @@ HELP_TEXT = (
     "· /精华 XXX —— 翻群精华；/历史 XXX —— 查刚才谁说过什么\n"
     "· /成员 XXX —— 查群成员资料\n"
     "· /记住 XXX —— 让我长期记住一件事；/记忆 —— 看我记住了什么\n"
+    "· /找图 XXX —— 按内容找群相册里的图；存图时我会自动记住图里有什么\n"
+    "· /链接 [关键词] —— 翻本群收藏过的链接（群里发链接我自动收）\n"
+    "· /绑定文档 —— 看在线文档绑定状态；/绑定文档 链接 / /创建文档 标题（管理员）\n"
     "· /状态 —— 看今天的对话/联网/主动发言额度\n"
     "· /人设 —— 看当前人设（管理员可换可恢复）\n"
     "· /reset —— 管理员清空本群对话上下文\n"

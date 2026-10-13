@@ -29,6 +29,7 @@ from nonebot import get_plugin_config, logger, on_message
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageEvent
 from nonebot.rule import Rule, to_me
 
+from . import album_index
 from .config import Config
 from .tools import at_me
 
@@ -40,7 +41,7 @@ ALBUM_VERB_RE = re.compile(r"存|收|传|保存|放进|丢进|上交")
 
 
 async def _album_rule(bot: Bot, event: MessageEvent) -> bool:
-    """@机器人 + 带图 + 文字里有「相册」+「存/收/传」。"""
+    """@机器人（任意位置）+ 带图 + 文字里有「相册」+「存/收/传」。"""
     if not cfg.ai_album_enabled:
         return False
     if not isinstance(event, GroupMessageEvent):
@@ -103,7 +104,11 @@ async def _image_payload(bot: Bot, seg) -> str:
 
 
 def _pick_album(result) -> tuple[str, str]:
-    """从 get_qun_album_list 的返回里挑第一个相册，返回 (album_id, album_name)。"""
+    """从 get_qun_album_list 的返回里挑第一个相册，返回 (album_id, album_name)。
+
+    NapCat 4.18+ 返回 {"album_list": [...], "attach_info": ..., "has_more": ...}，
+    列表包在 album_list 键里；老实现可能直接给数组，两种都兼容。
+    """
     data = result.get("data", result) if isinstance(result, dict) else result
     if isinstance(data, dict):
         data = data.get("album_list") or data.get("albums") or data.get("list") or []
@@ -156,6 +161,7 @@ async def _handle_save(bot: Bot, event: GroupMessageEvent) -> None:
 
     # ---- 逐张上传 ----
     ok, fail = 0, 0
+    uploaded: list[str] = []  # 上传成功的图片 payload，供内容索引用
     for seg in imgs:
         payload = await _image_payload(bot, seg)
         if not payload:
@@ -165,7 +171,7 @@ async def _handle_save(bot: Bot, event: GroupMessageEvent) -> None:
             await asyncio.wait_for(
                 bot.call_api(
                     "upload_image_to_qun_album",
-                    group_id=gid,
+                    group_id=str(gid),
                     album_id=album_id,
                     album_name=album_name,
                     file=payload,
@@ -173,6 +179,7 @@ async def _handle_save(bot: Bot, event: GroupMessageEvent) -> None:
                 timeout=30.0,
             )
             ok += 1
+            uploaded.append(payload)
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[ai_chat] 上传群相册失败: {exc!r}")
             fail += 1
@@ -182,6 +189,19 @@ async def _handle_save(bot: Bot, event: GroupMessageEvent) -> None:
         text = f"已把 {ok} 张图存进群相册「{album_name or '默认相册'}」啦 ✅"
         if fail:
             text += f"\n另有 {fail} 张没存上，可能是图片失效了"
+        # 相册内容索引：后台登记 + 生成内容描述，不挡这条回复。
+        # 描述失败/模型不支持识图都无所谓——索引照建，还能按相册名和日期找。
+        if cfg.ai_album_index_enabled and uploaded:
+            sender = event.sender
+            by = (
+                getattr(sender, "card", "")
+                or getattr(sender, "nickname", "")
+                or f"QQ{event.user_id}"
+            )
+            for payload in uploaded:
+                asyncio.create_task(
+                    album_index.background_index(gid, album_id, album_name, payload, str(by))
+                )
         await album.finish(text)
     else:
         await album.finish(

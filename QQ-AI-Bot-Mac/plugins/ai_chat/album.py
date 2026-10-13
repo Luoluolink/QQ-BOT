@@ -29,6 +29,7 @@ from nonebot import get_plugin_config, logger, on_message
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageEvent
 from nonebot.rule import Rule, to_me
 
+from . import album_index
 from .config import Config
 from .tools import at_me
 
@@ -160,6 +161,7 @@ async def _handle_save(bot: Bot, event: GroupMessageEvent) -> None:
 
     # ---- 逐张上传 ----
     ok, fail = 0, 0
+    uploaded: list[str] = []  # 上传成功的图片 payload，供内容索引用
     for seg in imgs:
         payload = await _image_payload(bot, seg)
         if not payload:
@@ -177,6 +179,7 @@ async def _handle_save(bot: Bot, event: GroupMessageEvent) -> None:
                 timeout=30.0,
             )
             ok += 1
+            uploaded.append(payload)
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[ai_chat] 上传群相册失败: {exc!r}")
             fail += 1
@@ -186,6 +189,19 @@ async def _handle_save(bot: Bot, event: GroupMessageEvent) -> None:
         text = f"已把 {ok} 张图存进群相册「{album_name or '默认相册'}」啦 ✅"
         if fail:
             text += f"\n另有 {fail} 张没存上，可能是图片失效了"
+        # 相册内容索引：后台登记 + 生成内容描述，不挡这条回复。
+        # 描述失败/模型不支持识图都无所谓——索引照建，还能按相册名和日期找。
+        if cfg.ai_album_index_enabled and uploaded:
+            sender = event.sender
+            by = (
+                getattr(sender, "card", "")
+                or getattr(sender, "nickname", "")
+                or f"QQ{event.user_id}"
+            )
+            for payload in uploaded:
+                asyncio.create_task(
+                    album_index.background_index(gid, album_id, album_name, payload, str(by))
+                )
         await album.finish(text)
     else:
         await album.finish(

@@ -265,3 +265,32 @@ class Config(BaseModel):
     ai_proactive_daily_limit: int = 12
     # 消息至少多长才考虑触发（防止「AI」两个字在口水消息里误命中）
     ai_proactive_min_len: int = 6
+
+    # ---------- 相册内容索引 ----------
+    # 存图时让识图模型生成一句话描述存进 data/album_index.json，
+    # 之后 /找图 或对话就能按内容找图（「那张雪山的图在哪个相册」）。
+    # 描述生成是尽力而为：模型不支持识图就只记相册名和日期。
+    ai_album_index_enabled: bool = True
+    # 每群最多索引多少张（超出挤掉最旧的）
+    ai_album_index_max_per_group: int = 300
+
+    # ---------- 链接收藏库 ----------
+    # 群里发的链接自动抓标题归档进 data/link_archive.json，可检索，
+    # 并同步到本群绑定的腾讯文档（见 docsync）。抓标题超时即放弃用域名兜底。
+    ai_linkarchive_enabled: bool = True
+    # 每群最多收藏多少条（超出挤掉最旧的）
+    ai_linkarchive_max_per_group: int = 500
+    # 抓标题的超时（秒）
+    ai_linkarchive_timeout: float = 8.0
+
+    # ---------- 腾讯文档同步（链接收藏的落库通道）----------
+    # 对接官方 OpenAPI（docs.qq.com/open）。三件套配置方法：
+    #   1. 去 docs.qq.com/open 注册开发者、创建应用，拿到 Client ID/Secret；
+    #   2. 按官方授权页拼授权链接，扫码后从回调里拿 code 换 token，
+    #      把 refresh_token（和 open_id）填到 .env / data/tdoc_token.json；
+    #   3. 机器人自动续期 access_token，之后 /绑定文档 或 /创建文档 即可用。
+    # 没配置时链接收藏照常工作，只是不同步到在线文档。
+    ai_docs_enabled: bool = True
+    ai_docs_client_id: str = ""
+    ai_docs_client_secret: str = ""
+    ai_docs_refresh_token: str = ""
