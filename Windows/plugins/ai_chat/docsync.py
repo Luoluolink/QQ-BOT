@@ -58,6 +58,9 @@ _FILTER_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "doc_fil
 _OAUTH_TOKEN_URL = "https://docs.qq.com/oauth/v2/token"
 _DRIVE_BASE = "https://docs.qq.com/openapi/drive/v2"
 _DOC_BASE = "https://docs.qq.com/openapi/doc/v3"
+# 表格（sheet）专用：读 sheets-info/写区域走 sheetbook v2，读区域走 spreadsheet v3
+_SHEETBOOK = "https://docs.qq.com/openapi/sheetbook/v2"
+_SPREAD_V3 = "https://docs.qq.com/openapi/spreadsheet/v3"
 
 # access_token 过期前提前这么多秒就续期，避免临界点请求失败
 _EXPIRY_MARGIN = 300.0
@@ -413,6 +416,15 @@ def parse_file_id(text: str) -> str:
     return m.group(1) if m else ""
 
 
+def parse_kind(text: str) -> str:
+    """从链接判断文档类型：'doc' / 'sheet' / ''（认不出）。"""
+    if re.search(r"docs\.qq\.com/sheet/", text or ""):
+        return "sheet"
+    if re.search(r"docs\.qq\.com/doc/", text or ""):
+        return "doc"
+    return ""
+
+
 async def _doc_tree(file_id: str) -> dict:
     headers = await _auth_headers()
     data = await _http_json(url=f"{_DOC_BASE}/{file_id}", headers=headers)
@@ -456,6 +468,156 @@ async def append_text(file_id: str, text: str) -> None:
         headers=headers,
         payload=body,
     )
+
+
+# ---- 表格（在线表格/sheet）操作 ----
+# 官方接口（实测验证 2026-10）：
+#   GET  /openapi/drive/v2/util/converter?type=2&value=<encodedID>  URL里的ID→bookID
+#   GET  /openapi/sheetbook/v2/{bookID}/sheets-info                 工作表列表+行列数
+#   GET  /openapi/spreadsheet/v3/files/{bookID}/{sheetID}/{A1}      读区域
+#   PUT  /openapi/sheetbook/v2/{bookID}/values/{sheetID}!{A1}       写区域（二维数组）
+# 注意：sheet 的 fileID（bookID，形如 300000000$XXX）和链接里的 encodedID
+# （形如 DXXXX）不是同一个东西，URL 进来必须先转换。
+
+
+def _col_letter(n: int) -> str:
+    """1-based 列号 → A1 表示法的字母（1→A, 26→Z, 27→AA）。"""
+    s = ""
+    while n:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
+async def _to_book_id(encoded_id: str) -> str:
+    """URL 里的 encodedID → sheet 接口要用的 bookID。"""
+    headers = await _auth_headers()
+    data = await _http_json(
+        url=f"{_DRIVE_BASE}/util/converter?type=2&value={urllib.parse.quote(encoded_id, safe='')}",
+        headers=headers,
+    )
+    if data.get("ret") == 0:
+        book = str((data.get("data") or {}).get("fileID") or "")
+        if book:
+            return book
+    raise DocsApiError(f"fileID 转换失败: {str(data)[:150]}")
+
+
+async def _sheet_list(book_id: str) -> list[dict[str, Any]]:
+    """工作表列表，每项含 sheetID/title/rowCount/columnCount。"""
+    headers = await _auth_headers()
+    data = await _http_json(
+        url=f"{_SHEETBOOK}/{urllib.parse.quote(book_id, safe='')}/sheets-info",
+        headers=headers,
+    )
+    if data.get("ret") != 0:
+        raise DocsApiError(f"读工作表列表失败: {str(data)[:150]}")
+    sheets = (data.get("data") or {}).get("sheetData") or []
+    return [s for s in sheets if isinstance(s, dict)]
+
+
+async def _sheet_read(book_id: str, sid: str, n_rows: int, n_cols: int) -> list[list[str]]:
+    """读区域 → 二维文本表（空单元格补空串，行内长度统一成 n_cols）。"""
+    headers = await _auth_headers()
+    a1 = f"A1:{_col_letter(n_cols)}{max(n_rows, 1)}"
+    path = urllib.parse.quote(f"{book_id}/{sid}/{a1}", safe="")
+    data = await _http_json(url=f"{_SPREAD_V3}/files/{path}", headers=headers)
+    grid = data.get("gridData") or {}
+    out: list[list[str]] = []
+    for row in grid.get("rows") or []:
+        vals: list[str] = []
+        for cell in (row.get("values") or [])[:n_cols]:
+            cv = cell.get("cellValue") or {}
+            vals.append(str(cv.get("text") or ""))
+        vals += [""] * (n_cols - len(vals))
+        out.append(vals)
+    return out
+
+
+async def _sheet_write(book_id: str, sid: str, start_row: int, values: list[list[str]]) -> None:
+    """从第 start_row 行第 1 列开始写入一块二维数据。"""
+    headers = await _auth_headers()
+    n_rows = len(values)
+    n_cols = max(len(r) for r in values)
+    a1 = f"{_col_letter(1)}{start_row}:{_col_letter(n_cols)}{start_row + n_rows - 1}"
+    path = urllib.parse.quote(f"{book_id}/values/{sid}!{a1}", safe="")
+    await _http_json(
+        url=f"{_SHEETBOOK}/{path}",
+        method="PUT",
+        headers=headers,
+        payload={"values": values},
+    )
+
+
+# 表头关键词 → 功能列。机器人只知道页面标题和链接，分类列留空。
+_SHEET_HEADER_KEYS: dict[str, tuple[str, ...]] = {
+    "name": ("名字", "名称", "标题", "网站", "资源"),
+    "cat": ("分类", "类别", "类型"),
+    "intro": ("介绍", "说明", "描述", "简介", "内容"),
+    "link": ("链接", "网址", "地址", "url"),
+}
+_SHEET_DEFAULT_HEADER = ("名字", "分类", "介绍", "链接")
+
+
+def _map_header(header: list[str]) -> dict[str, int] | None:
+    """识别表头行：返回 功能名→列下标；认不出链接列就返回 None。"""
+    mapping: dict[str, int] = {}
+    for func, keys in _SHEET_HEADER_KEYS.items():
+        for i, cell in enumerate(header):
+            if cell.strip() and any(k in cell.strip().lower() for k in keys):
+                mapping[func] = i
+                break
+    return mapping if "link" in mapping else None
+
+
+async def _sheet_append_entry(gid: int, title: str, url: str, info: dict[str, Any]) -> str:
+    """把一条链接追加进绑定表格：读表头识别「名字/分类/介绍/链接」各在哪列，
+    在最后一行下面照列写入；空表先写默认表头；URL 已存在则跳过（dup）。"""
+    book_id = str(info.get("book_id") or "")
+    if not book_id:
+        book_id = await _to_book_id(info["file_id"])
+        info["book_id"] = book_id
+        _save_bindings()
+    sheets = await _sheet_list(book_id)
+    sheet = next((s for s in sheets if s.get("isVisible")), sheets[0] if sheets else None)
+    if not sheet:
+        return "错误: 表格里没有可见的工作表"
+    sid = str(sheet["sheetID"])
+    rc = int(sheet.get("rowCount") or 0)   # 有数据的最后一行
+    cc = int(sheet.get("columnCount") or 0)
+    n_cols = max(cc, len(_SHEET_DEFAULT_HEADER))
+
+    rows = await _sheet_read(book_id, sid, rc, n_cols) if rc else []
+    header = rows[0] if rows else []
+    mapping = _map_header(header)
+
+    # 判重：任何一行的任何单元格出现过这个 URL 就不重复写
+    if any(url in cell for row in rows for cell in row):
+        return "dup"
+
+    if not mapping:
+        if rc == 0:
+            # 空表 → 先写默认表头，数据从第 2 行开始
+            await _sheet_write(book_id, sid, 1, [list(_SHEET_DEFAULT_HEADER)])
+            rows, header = [], []
+            mapping = {"name": 0, "cat": 1, "intro": 2, "link": 3}
+            target = 2
+        else:
+            # 有数据但没有可识别的表头 → 照 A-D 列尽力写
+            mapping = {"name": 0, "cat": 1, "intro": 2, "link": 3}
+            target = rc + 1
+    else:
+        target = rc + 1
+
+    name = title[:20] if title else url
+    entry = [""] * n_cols
+    entry[mapping["link"]] = url
+    entry[mapping["name"]] = name
+    if "intro" in mapping:
+        entry[mapping["intro"]] = title
+    # 分类列机器人判不了，留空给人填
+    await _sheet_write(book_id, sid, target, [entry])
+    return "ok"
 
 
 # ---- 条目格式 ----
@@ -555,12 +717,30 @@ _HEADER_BLOCK = (
 
 
 async def bind_doc(gid: int, url_or_id: str) -> dict[str, Any]:
-    """绑定已有文档。先读一次验证权限，读不了就报错（提示加协作者）。"""
+    """绑定已有文档/表格。按链接类型分流验证，读不了就报错（提示加协作者）。"""
     fid = parse_file_id(url_or_id) or url_or_id.strip()
     if not fid:
-        raise DocsApiError("链接里找不到文档 ID，请发完整的 docs.qq.com/doc/xxx 链接")
-    text, _, _ = await read_doc(fid)  # 验证可读
-    info = {"file_id": fid, "url": f"https://docs.qq.com/doc/{fid}", "chars": len(text)}
+        raise DocsApiError("链接里找不到文档 ID，请发完整的 docs.qq.com/doc/ 或 /sheet/ 链接")
+    kind = parse_kind(url_or_id)
+    if kind == "sheet":
+        # 表格：URL 里的 ID 要转成 bookID 才能用，顺便验证权限
+        book_id = await _to_book_id(fid)
+        sheets = await _sheet_list(book_id)
+        info = {
+            "file_id": fid,
+            "url": f"https://docs.qq.com/sheet/{fid}",
+            "kind": "sheet",
+            "book_id": book_id,
+            "sheets": len(sheets),
+        }
+    else:
+        text, _, _ = await read_doc(fid)  # 验证可读
+        info = {
+            "file_id": fid,
+            "url": f"https://docs.qq.com/doc/{fid}",
+            "kind": "doc",
+            "chars": len(text),
+        }
     _bindings_map()[str(gid)] = info
     _save_bindings()
     return info
@@ -591,9 +771,9 @@ async def create_doc(gid: int, title: str) -> dict[str, Any]:
 
 
 async def append_entry(gid: int, title: str, url: str, by: str = "") -> str:
-    """把一条链接按文档现有格式追加到文末。
+    """把一条链接按绑定文档/表格的现有格式追加进去。
 
-    返回人话状态：'ok' / '未绑定' / '未配置' / '错误: ...'，调用方只打日志。
+    返回人话状态：'ok' / 'dup' / '未绑定' / '未配置' / '错误: ...'，调用方只打日志。
     """
     if not cfg.ai_docs_enabled:
         return "未配置"
@@ -602,6 +782,14 @@ async def append_entry(gid: int, title: str, url: str, by: str = "") -> str:
     info = binding(gid)
     if not info:
         return "未绑定"
+    kind = info.get("kind") or parse_kind(info.get("url") or "") or "doc"
+    if kind == "sheet":
+        try:
+            return await _sheet_append_entry(gid, title, url, info)
+        except DocsAuthError as exc:
+            return f"错误: 凭证失效（{exc}）"
+        except Exception as exc:  # noqa: BLE001
+            return f"错误: 写表格失败 {exc!r}"
     fid = info["file_id"]
     today = time.strftime("%Y-%m-%d")
     try:
@@ -741,6 +929,8 @@ async def _handle_collect_cmd(
     status = await append_entry(gid, entry["title"], entry["url"], by)
     if status == "ok":
         await collect_cmd.finish(f"已收录进在线文档 ✅《{entry['title'][:40]}》")
+    if status == "dup":
+        await collect_cmd.finish(f"《{entry['title'][:40]}》已经在文档里了，不用重复收录")
     if status == "未绑定":
         await collect_cmd.finish("本群还没绑定在线文档：先 /绑定文档 链接 或 /创建文档 标题")
     if status == "未配置":

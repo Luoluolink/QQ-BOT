@@ -137,6 +137,8 @@ async def _exec_sync_to_doc(bot: Bot, event: GroupMessageEvent, args: dict, is_a
     status = await docsync.append_entry(gid, entry["title"], entry["url"], entry.get("by") or "手动收录")
     if status == "ok":
         return f"已收录进在线文档 ✅《{entry['title'][:40]}》"
+    if status == "dup":
+        return f"《{entry['title'][:40]}》已经在文档里了，不用重复收录"
     if status == "未绑定":
         return "本群还没绑定在线文档：先对我说「绑定文档」或「创建文档」"
     if status == "未配置":
