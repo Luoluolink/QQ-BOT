@@ -54,6 +54,7 @@ from . import (
     filetext,
     forward,
     history,
+    intent,
     interact,
     linkarchive,
     media,
@@ -790,6 +791,13 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
     if now - _last_call.get(group_id, 0.0) < cfg.ai_cooldown:
         return
 
+    # 意图路由：@机器人说人话也能触发功能（/命令仍可用）。
+    # 放在聊天额度扣减之前——功能动作不该消耗聊天额度；
+    # 预筛不命中的消息在这里零开销直接落回下面的聊天流程，
+    # 路由判定为「聊天」时也会落回去，不会吞消息。
+    if text and await intent.try_handle(bot, event, text, _is_bot_admin(bot, event)):
+        return
+
     _roll_day_if_needed()
 
     if _usage[group_id] >= cfg.ai_daily_limit:
@@ -1276,6 +1284,8 @@ help_cmd = on_command("help", aliases={"帮助", "功能", "菜单"}, priority=1
 HELP_TEXT = (
     "我是本群的 AI 助手，常用功能：\n"
     "· @我 + 任意问题 —— 对话（带图片也能看图说话）\n"
+    "· @我 + 说人话 —— 我自己听懂你想干嘛：绑定文档、建文档、找图、\n"
+    "  翻收藏链接、记住/忘记事情、换人设……不用背任何命令\n"
     "· @我 + 图片 + 说「存相册」—— 收进群相册\n"
     "· @我 + 来首 XXX —— 点歌分享\n"
     "· /文件 XXX —— 查群文件在哪；/文档 XXX —— 查文件内容写了什么\n"
@@ -1422,6 +1432,51 @@ async def handle_persona(
         f"本群人设已更新（{len(text)} 字），立刻生效。\n"
         "资源检索铁律已自动附加，我不会因此开始编造文件名～"
     )
+
+
+# 人设的执行器在 __init__（人设存储函数在这里），注册给意图路由供
+# 「@机器人 换个人设：…」这种自然语言说法使用。
+async def _intent_set_persona(bot: Bot, event: GroupMessageEvent, args: dict, is_admin: bool) -> str:
+    text = str(args.get("text") or "").strip()
+    if not text:
+        return "想把我换成什么性格？描述清楚一点，比如「毒舌但心软的猫娘」"
+    if not cfg.ai_persona_override_enabled:
+        return "人设覆盖功能当前是关闭的（AI_PERSONA_OVERRIDE_ENABLED=false）"
+    if text in ("恢复", "重置", "默认", "还原"):
+        _set_persona(event.group_id, "")
+        return "已恢复默认人设（吉普莉尔）"
+    if len(text) < cfg.ai_persona_min_len:
+        return (
+            f"新人设太短了，至少 {cfg.ai_persona_min_len} 字——"
+            "把性格、说话方式描述清楚，效果才稳定"
+        )
+    if len(text) > 2000:
+        return "人设最长 2000 字，精简一点反而效果更好"
+    _set_persona(event.group_id, text)
+    return (
+        f"本群人设已更新（{len(text)} 字），立刻生效。\n"
+        "资源检索铁律已自动附加，我不会因此开始编造文件名～"
+    )
+
+
+async def _intent_persona_status(bot: Bot, event: GroupMessageEvent, args: dict, is_admin: bool) -> str:
+    src, length = _persona_source(event.group_id)
+    current = _persona_for(event.group_id)
+    preview = current[:100] + ("…" if len(current) > 100 else "")
+    return (
+        f"当前人设：{src}" + (f"（{length} 字）" if length else "") + f"\n开头是：{preview}\n"
+        "对我说「换个人设：…」即可更换，说「恢复默认人设」还原（管理员）。"
+    )
+
+
+intent.EXTRA_ACTIONS["set_persona"] = _intent_set_persona
+intent.EXTRA_SPECS["set_persona"] = (
+    "更换机器人的性格人设",
+    "text（人设描述，恢复默认时传「恢复」）",
+    True,
+)
+intent.EXTRA_ACTIONS["persona_status"] = _intent_persona_status
+intent.EXTRA_SPECS["persona_status"] = ("查看当前人设", "无参数", False)
 
 
 # ---------------------------------------------------------------- 新成员入群欢迎
