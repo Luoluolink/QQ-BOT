@@ -25,7 +25,7 @@ import time
 from collections import defaultdict, deque
 from datetime import date
 from pathlib import Path
-from typing import DefaultDict, Deque, Dict
+from typing import Any, DefaultDict, Deque, Dict
 
 from nonebot import get_plugin_config, logger, on_command, on_message, on_notice
 from nonebot.adapters import Event
@@ -44,6 +44,7 @@ from openai import AsyncOpenAI
 
 from . import (
     admin,
+    comfyui,
     essence,
     filetext,
     forward,
@@ -68,12 +69,18 @@ __plugin_meta__ = PluginMetadata(
         "支持识别群友发来的图片（需模型本身是多模态的），"
         "支持识别被 @ 或被提到的群成员，"
         "可选联网搜索获取实时信息（带每日额度限制），"
+        "可选接入本机 ComfyUI 生图（/画 提示词 出图，/画图模型 看本机有哪些模型），"
         "新成员入群时自动欢迎。"
     ),
     usage=(
         "@机器人 你的问题\n"
         "@机器人 + 图片 —— 识图（需模型支持多模态）\n"
         "@机器人 @某群友 问关于他的问题 —— 会知道说的是谁\n"
+        "/画 提示词 —— 用本机 ComfyUI 生成一张图（需先开启 AI_IMAGE_ENABLED）\n"
+        "/画 提示词 --尺寸 768x768 --步数 30 -n 负向词 —— 带参数的生成\n"
+        "/画图模型 —— 列出本机 ComfyUI 支持的模型 / LoRA / 采样器等生图细节\n"
+        "/画图模型 refresh —— 刷新模型清单（限群主与管理员）\n"
+        "/comfy —— 查看生图状态（在不在线、队列、今日额度）\n"
         "/files 关键词 —— 直接检索群资源，不走模型，秒回\n"
         "/files list —— 列出所有目录与相册\n"
         "/files refresh —— 重建索引（限群主与管理员）\n"
@@ -141,12 +148,13 @@ def get_client() -> AsyncOpenAI:
 
 
 def _roll_day_if_needed() -> None:
-    """跨天时清零用量统计（群聊和私聊一起清）。"""
+    """跨天时清零用量统计（群聊、私聊、生图一起清）。"""
     global _usage_day
     today = date.today().isoformat()
     if today != _usage_day:
         _usage.clear()
         _private_usage.clear()
+        _image_usage.clear()
         _usage_day = today
 
 
@@ -654,6 +662,18 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
     if not text and not images:
         return
 
+    # 自然语言生图（可选，默认关闭）：@机器人 说「画一张猫」就直接去画，不再走对话。
+    # 放在聊天冷却之前判断 —— 生图有自己的一套冷却与额度，不该被聊天的 5 秒冷却挡住。
+    if (
+        cfg.ai_image_enabled
+        and cfg.ai_image_nl_trigger
+        and not images
+        and not text.lstrip().startswith("/")
+        and comfyui.looks_like_draw_query(text)
+    ):
+        await _image_flow(chat, event, text)
+        return
+
     # 冷却：同一群短时间内只回一次
     if now - _last_call.get(group_id, 0.0) < cfg.ai_cooldown:
         return
@@ -1094,6 +1114,326 @@ async def handle_reset(event: GroupMessageEvent) -> None:
         await reset.finish("只有群主或管理员可以清空上下文")
     _history.pop(event.group_id, None)
     await reset.finish("本群上下文已清空")
+
+
+# ---------------------------------------------------------------- 本地 ComfyUI 生图
+#
+# 生图比聊天重得多：一张图要几秒到几十秒、会把显存吃满，而且它是「被叫到就
+# 主动发图」，比纯文本更容易触发 QQ 风控。所以它有三层独立闸门，默认全关：
+#
+#   AI_IMAGE_ENABLED      总开关（默认 false）
+#   AI_IMAGE_COOLDOWN     同群冷却，默认 30 秒（聊天是 5 秒）
+#   AI_IMAGE_DAILY_LIMIT  每群每日上限，默认 20 张
+#
+# 额度与聊天各记各的，生图不挤占对话额度，反之亦然。
+# 真正的实现都在 comfyui.py 里（纯逻辑，可单独测试），这里只做收消息、
+# 限流、把图发出去。
+
+# 项目根目录（qq-ai-bot/），用于解析相对路径的生图结果目录
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+_image_last: Dict[int, float] = {}
+_image_usage: DefaultDict[int, int] = defaultdict(int)
+
+# 模型清单缓存：/object_info 的返回有几百 KB，每张图都重拉太浪费
+_image_models_cache: Dict[str, Any] = {"models": None, "at": 0.0}
+
+IMAGE_HELP = (
+    "本地生图用法：\n"
+    "/画 提示词 —— 生成一张图\n"
+    "/画图模型 —— 看本机支持哪些模型、LoRA、采样器\n"
+    "/comfy —— 看生图状态（在不在线、队列、今日额度）\n"
+    "\n"
+    "可选参数（跟在提示词后面就行）：\n"
+    "　--尺寸 768x768　--步数 30　--cfg 7.5\n"
+    "　--模型 名称　--采样器 dpmpp_2m　--调度器 karras\n"
+    "　--种子 12345　--数量 2　-n 负向提示词\n"
+    "\n"
+    "例子：/画 一只橘猫坐在窗台上 --尺寸 768x768 --步数 30 -n 模糊"
+)
+
+
+def _image_dir() -> Path:
+    """生成结果的保存目录，相对路径按项目根目录算。"""
+    raw = (cfg.ai_image_save_dir or "data/images").strip() or "data/images"
+    path = Path(raw).expanduser()
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
+
+def _image_client() -> comfyui.ComfyClient:
+    """每次新建一个客户端：里面只存配置，真正的连接是短连接，用完就关。"""
+    return comfyui.ComfyClient(
+        cfg.ai_image_api_base,
+        timeout=max(15.0, float(cfg.ai_image_timeout)),
+    )
+
+
+async def _image_models(force: bool = False) -> tuple[comfyui.ComfyModels, str]:
+    """带缓存的模型清单，返回 (清单, 错误说明)。
+
+    拉取失败时如果手里还有旧的清单，就先用旧的（ComfyUI 重启期间不至于整个
+    功能报错），只是不会更新缓存。
+    """
+    now = time.time()
+    ttl = max(0, int(cfg.ai_image_models_ttl))
+    cached = _image_models_cache.get("models")
+    fetched_at = float(_image_models_cache.get("at") or 0.0)
+
+    if not force and cached is not None and ttl > 0 and now - fetched_at < ttl:
+        return cached, ""
+
+    fresh, error = await comfyui.load_models(_image_client())
+    if not error:
+        _image_models_cache["models"] = fresh
+        _image_models_cache["at"] = now
+        return fresh, ""
+
+    if cached is not None:
+        return cached, ""
+    return comfyui.ComfyModels(), error
+
+
+def _image_probe() -> str:
+    """检查生图功能能不能用，返回空串表示正常，否则是给用户看的说明。"""
+    if not cfg.ai_image_enabled:
+        return (
+            "本地生图当前是关闭的。\n"
+            "打开方式：把 .env 里的 AI_IMAGE_ENABLED 改成 true，"
+            "确认 ComfyUI 已在本机跑起来（默认 127.0.0.1:8188），改完重启机器人。"
+        )
+    return ""
+
+
+async def _image_flow(sender: Any, event: GroupMessageEvent, text: str) -> bool:
+    """/画 命令与自然语言触发共用的生图流程。
+
+    返回 True 表示这条消息已经被生图接管（正常路径都会以 finish 收尾，
+    实际上会抛 FinishedException 提前结束消息处理）。
+    """
+    reason = _image_probe()
+    if reason:
+        await sender.finish(reason)
+        return True
+
+    text = (text or "").strip()
+    if text in ("refresh", "刷新", "重建"):
+        if event.sender.role not in ("owner", "admin"):
+            await sender.finish("只有群主或管理员可以刷新模型清单")
+        models, error = await _image_models(force=True)
+        if error:
+            await sender.finish(f"刷新失败：{error}")
+        await sender.finish(
+            f"模型清单已刷新：检查点 {len(models.checkpoints)} 个，"
+            f"LoRA {len(models.loras)} 个，采样器 {len(models.samplers)} 个"
+        )
+        return True
+
+    if not text or text in ("help", "帮助", "?", "？"):
+        await sender.finish(IMAGE_HELP)
+        return True
+
+    prompt, overrides, warnings = comfyui.parse_draw_command(text)
+    if not prompt:
+        await sender.finish("要画什么？比如：/画 一只在雨里的猫")
+        return True
+
+    group_id = event.group_id
+    now = time.time()
+    if now - _image_last.get(group_id, 0.0) < cfg.ai_image_cooldown:
+        await sender.finish(
+            f"别急，本群两次生图至少要隔 {cfg.ai_image_cooldown:g} 秒～"
+        )
+        return True
+
+    _roll_day_if_needed()
+    if _image_usage[group_id] >= cfg.ai_image_daily_limit:
+        await sender.finish(
+            f"本群今天的生图额度用完了（{cfg.ai_image_daily_limit} 张），明天再来找我～"
+        )
+        return True
+
+    models, error = await _image_models()
+    if error:
+        await sender.finish(
+            f"连不上本地 ComfyUI（{cfg.ai_image_api_base}）：{error}\n"
+            "请先启动 ComfyUI（它默认监听 8188 端口），或改 .env 里的 AI_IMAGE_API_BASE。"
+        )
+        return True
+
+    try:
+        options = comfyui.build_options(
+            prompt, overrides, comfyui.settings_from_config(cfg), models
+        )
+    except ValueError as exc:
+        await sender.finish(str(exc))
+        return True
+
+    # 先把冷却与额度记上。生成中途失败也不退回 —— 否则连点几次失败的请求
+    # 就能绕开限流，等于没有闸门。
+    _image_last[group_id] = now
+    _image_usage[group_id] += 1
+
+    workflow = comfyui.build_txt2img_workflow(options)
+    seed = comfyui.workflow_seed(workflow)
+
+    if cfg.ai_image_announce:
+        announce = comfyui.describe_options(options, seed)
+        if warnings:
+            announce += "\n" + "\n".join(warnings)
+        await sender.send(announce)
+
+    client = _image_client()
+    try:
+        entry = await client.generate(
+            workflow,
+            timeout=float(cfg.ai_image_timeout),
+            poll=float(cfg.ai_image_poll),
+        )
+    except comfyui.ComfyError as exc:
+        logger.warning(f"[ai_chat] 生图失败: {exc!r}")
+        await sender.finish(f"生图失败了：{exc}")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[ai_chat] 生图异常: {exc!r}")
+        await sender.finish("生图时出了点问题，去机器人日志看看细节～")
+        return True
+
+    refs = comfyui.extract_images(entry)
+    if not refs:
+        await sender.finish("生成跑完了，但没有拿到图片")
+        return True
+
+    directory = _image_dir()
+    saved: list[Path] = []
+    for ref in refs[:4]:
+        try:
+            data = await client.fetch_image(ref)
+        except comfyui.ComfyError as exc:
+            logger.warning(f"[ai_chat] 取图失败: {exc!r}")
+            continue
+        try:
+            saved.append(comfyui.save_image(directory, data, ref))
+        except OSError as exc:
+            logger.warning(f"[ai_chat] 保存图片失败: {exc!r}")
+
+    if not saved:
+        await sender.finish("图生成了，但没能取回来（可能是取图超时），稍后再试试")
+        return True
+
+    comfyui.prune_images(directory, int(cfg.ai_image_keep))
+
+    segments: list = []
+    if cfg.ai_reply_quote:
+        segments.append(MessageSegment.reply(event.message_id))
+    segments.append(
+        MessageSegment.text(f"{options.prompt}｜{options.summary()}｜种子 {seed}")
+    )
+    for path in saved:
+        # 用 file:// URI 而不是裸路径：CQ 码里反斜杠是转义符，Windows 路径会解析出错
+        segments.append(MessageSegment.image(path.as_uri()))
+    await sender.finish(Message(segments))
+    return True
+
+
+draw_cmd = on_command(
+    "画",
+    aliases={"画画", "绘图", "文生图", "draw", "生成图片"},
+    priority=9,
+    block=True,
+)
+
+
+@draw_cmd.handle()
+async def handle_draw(event: GroupMessageEvent, args: Message = CommandArg()) -> None:
+    """用本地 ComfyUI 生成一张图。参数解析见 comfyui.parse_draw_command。"""
+    await _image_flow(draw_cmd, event, tools.args_text(args))
+
+
+image_models_cmd = on_command(
+    "画图模型",
+    aliases={"生图模型", "画图模型列表", "模型清单"},
+    priority=10,
+    block=True,
+)
+
+
+@image_models_cmd.handle()
+async def handle_image_models(
+    event: GroupMessageEvent, args: Message = CommandArg()
+) -> None:
+    """列出本机 ComfyUI 支持的模型与生图细节。
+
+    这个命令即使总开关关着也能用 —— 用户总得先看见有什么模型，
+    才好决定要不要打开生图。
+    """
+    query = tools.args_text(args)
+    if query in ("refresh", "刷新", "重建"):
+        if event.sender.role not in ("owner", "admin"):
+            await image_models_cmd.finish("只有群主或管理员可以刷新模型清单")
+        await _image_models(force=True)
+
+    models, error = await _image_models()
+    settings = comfyui.settings_from_config(cfg)
+
+    if error:
+        await image_models_cmd.finish(
+            comfyui.format_models_report(
+                models, settings, base_url=cfg.ai_image_api_base, online=False
+            )
+        )
+
+    report = comfyui.format_models_report(
+        models, settings, base_url=cfg.ai_image_api_base, online=True
+    )
+    if not cfg.ai_image_enabled:
+        report += (
+            "\n\n（提示：生图总开关 AI_IMAGE_ENABLED 现在是关闭的，"
+            "改成 true 并重启机器人才能在群里发 /画）"
+        )
+    if query and query not in ("refresh", "刷新", "重建"):
+        hits = comfyui.search_choices(models.checkpoints, query)
+        report += "\n\n与本机检查点里和「{}」沾边的：{}".format(
+            query, "、".join(hits) if hits else "没有"
+        )
+    await image_models_cmd.finish(report)
+
+
+comfy_cmd = on_command(
+    "comfy", aliases={"生图状态", "画图状态"}, priority=10, block=True
+)
+
+
+@comfy_cmd.handle()
+async def handle_comfy(event: GroupMessageEvent) -> None:
+    """看生图功能整体状态：ComfyUI 在不在线、队列、额度、图片目录。"""
+    client = _image_client()
+    try:
+        info = await client.object_info()
+        stats = await client.system_stats()
+        queue = await client.queue_info()
+    except comfyui.ComfyError as exc:
+        logger.warning(f"[ai_chat] 读取 ComfyUI 状态失败: {exc!r}")
+        await comfy_cmd.finish(
+            f"连不上本地 ComfyUI（{cfg.ai_image_api_base}）：{exc}\n"
+            "先启动 ComfyUI，再重发 /comfy。"
+        )
+        return
+
+    _roll_day_if_needed()
+    directory = _image_dir()
+    await comfy_cmd.finish(
+        comfyui.format_status_report(
+            base_url=cfg.ai_image_api_base,
+            models=comfyui.parse_object_info(info),
+            stats=stats,
+            queue=queue,
+            settings=comfyui.settings_from_config(cfg),
+            used=_image_usage[event.group_id],
+            limit=cfg.ai_image_daily_limit,
+            image_count=len(comfyui.list_saved_images(directory)),
+            image_dir=str(directory),
+        )
+    )
 
 
 # ---------------------------------------------------------------- 新成员入群欢迎

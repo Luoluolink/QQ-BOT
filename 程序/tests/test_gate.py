@@ -293,7 +293,10 @@ async def main() -> None:
     sp = ac._system_prompt()
     check("自定义人设下铁律仍在", "【铁律" in sp)
     check("自定义人设本身也在", "只会说「喵」的猫" in sp)
-    check("铁律排在最后（优先级声明在后）", sp.rstrip().endswith("不要用人设去包装。"))
+    # 直接和 IRON_RULES 当前内容比对，而不是写死某一句：
+    # 铁律以后增删条目时，这条断言不该跟着误报。
+    check("铁律整段排在最后（优先级声明在后）",
+          sp.rstrip().endswith(ac.IRON_RULES.rstrip()), sp[-60:])
     check("铁律只有一份", sp.count("【铁律") == 1, sp.count("【铁律"))
 
     # 人设留空

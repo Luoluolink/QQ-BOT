@@ -137,6 +137,54 @@ class Config(BaseModel):
     # 被回复时随机附带表情包的概率，0 = 只在别人明确索要时才发
     ai_sticker_probability: float = 0.0
 
+    # ---------- 本地 ComfyUI 生图 ----------
+    # 把群里的提示词送进本机 ComfyUI 出图，再把图发回群里。
+    # 为什么默认关闭：生图很重（一张图几秒到几十秒、吃满显存），
+    # 而且它是「被叫到就主动发图」，比纯文本更容易被 QQ 风控盯上。
+    # 想用就把这里改成 true，并确保 ComfyUI 已经在本机跑起来。
+    ai_image_enabled: bool = False
+    # ComfyUI 的地址。默认就是它本机的 8188 端口。
+    # 装在别的机器上就写成 http://192.168.x.x:8188
+    ai_image_api_base: str = "http://127.0.0.1:8188"
+    # 默认用哪个检查点模型。留空 = 用 ComfyUI 里的第一个。
+    # 不知道有什么可选就发 /画图模型 看清单，填那里的名字（可带子目录）
+    ai_image_default_model: str = ""
+    # 默认负向提示词，画风崩坏时加上它最省事
+    ai_image_default_negative: str = "低质量, 模糊, 变形, 多余的手指, 文字, 水印"
+    # 默认出图参数（都能被 /画 命令里的 --参数 临时覆盖）
+    ai_image_steps: int = 20
+    ai_image_cfg: float = 7.0
+    ai_image_sampler: str = "euler"
+    ai_image_scheduler: str = "normal"
+    ai_image_width: int = 512
+    ai_image_height: int = 512
+    # 宽高上限。8G 显存跑 1024 以上很容易爆，按自己显卡调。
+    # 命令里写的尺寸超过上限会被夹回来，并在回执里说明。
+    ai_image_max_width: int = 1024
+    ai_image_max_height: int = 1024
+    # 一次出几张（1~4）。显存吃紧就保持 1。
+    ai_image_batch: int = 1
+    # 整轮生成的最长等待时间（秒）。模型多/步数高时不够用就调大
+    ai_image_timeout: float = 180.0
+    # 轮询间隔（秒）。越小越灵敏，代价是多几次 HTTP 请求
+    ai_image_poll: float = 0.8
+    # 生成结果的保存目录（相对路径按项目根目录算，已在 .gitignore 里）
+    ai_image_save_dir: str = "data/images"
+    # 最多保留多少张，超出自动删最旧的。0 = 不清理
+    ai_image_keep: int = 200
+    # 生图比聊天重得多，冷却和额度都单独设（按群算）
+    ai_image_cooldown: float = 30.0
+    ai_image_daily_limit: int = 20
+    # 生成前先回一句「正在生成：…」，让群里知道在干活。介意刷屏就关掉
+    ai_image_announce: bool = True
+    # 打开后，@机器人 说「画一张…」「生成一张…」也会直接生图。
+    # 默认关闭：这类自然语言触发容易被误判，而且生图开销大，用命令更可控。
+    ai_image_nl_trigger: bool = False
+    # 模型清单（/画图模型 读的那份）的缓存时长（秒）
+    ai_image_models_ttl: int = 300
+    # 提示词最长多少字，超出截断
+    ai_image_max_prompt: int = 300
+
     # ---------- 防封号限流 ----------
     # 同一群两次回复的最小间隔（秒）
     ai_cooldown: float = 5.0

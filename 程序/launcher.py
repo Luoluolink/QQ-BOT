@@ -591,6 +591,65 @@ def dotenv_quote(text: str) -> str:
     return f'"{escaped}"'
 
 
+# 生图（ComfyUI）相关配置：这些项不放启动器网页上，但重写 .env 时必须原样保留，
+# 否则用户在 .env 里配好的生图参数会被启动器悄悄重置回默认值。
+IMAGE_ENV_KEYS: list[tuple[str, str]] = [
+    ("AI_IMAGE_ENABLED", "false"),
+    ("AI_IMAGE_API_BASE", "http://127.0.0.1:8188"),
+    ("AI_IMAGE_DEFAULT_MODEL", ""),
+    ("AI_IMAGE_DEFAULT_NEGATIVE", "低质量, 模糊, 变形, 多余的手指, 文字, 水印"),
+    ("AI_IMAGE_STEPS", "20"),
+    ("AI_IMAGE_CFG", "7.0"),
+    ("AI_IMAGE_SAMPLER", "euler"),
+    ("AI_IMAGE_SCHEDULER", "normal"),
+    ("AI_IMAGE_WIDTH", "512"),
+    ("AI_IMAGE_HEIGHT", "512"),
+    ("AI_IMAGE_MAX_WIDTH", "1024"),
+    ("AI_IMAGE_MAX_HEIGHT", "1024"),
+    ("AI_IMAGE_BATCH", "1"),
+    ("AI_IMAGE_TIMEOUT", "180"),
+    ("AI_IMAGE_POLL", "0.8"),
+    ("AI_IMAGE_SAVE_DIR", "data/images"),
+    ("AI_IMAGE_KEEP", "200"),
+    ("AI_IMAGE_COOLDOWN", "30"),
+    ("AI_IMAGE_DAILY_LIMIT", "20"),
+    ("AI_IMAGE_ANNOUNCE", "true"),
+    ("AI_IMAGE_NL_TRIGGER", "false"),
+    ("AI_IMAGE_MODELS_TTL", "300"),
+    ("AI_IMAGE_MAX_PROMPT", "300"),
+]
+
+IMAGE_ENV_HEADER = """# ---------- 本地 ComfyUI 生图（可选）----------
+# 让 ComfyUI 在本机跑起来，把 AI_IMAGE_ENABLED 改成 true，
+# 群里发「/画 一只猫」就能出图；发 /画图模型 看本机支持哪些模型。
+# 启动器不会改动下面这些行，可以放心手改。
+# 完整参数说明见同目录 .env.example。
+"""
+
+
+def dotenv_value(value: str) -> str:
+    """需要时给值加引号。带 # 的值不加引号会被 dotenv 当成注释截断。"""
+    text = str(value)
+    if any(ch in text for ch in '#"') or text != text.strip():
+        escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    return text
+
+
+def build_image_env_block(old: dict) -> str:
+    """生成生图配置块。
+
+    取值优先级：.env 里已有的 > 默认值。
+    注意判的是「键存不存在」而不是「值是否为空」—— 用户手动把某项清空
+    （例如不想要默认负向词）也应该被尊重，不能被默认值塞回来。
+    """
+    lines = [IMAGE_ENV_HEADER.rstrip()]
+    for key, default in IMAGE_ENV_KEYS:
+        value = old[key] if key in old else default
+        lines.append(f"{key}={dotenv_value(value)}")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 ENV_HEADER = """# ============================================================
 # 本文件由启动器自动生成。
 # 想手工调整各项参数（冷却、每日额度、联网开关等），
@@ -640,7 +699,8 @@ AI_COOLDOWN=5
 AI_DAILY_LIMIT=200
 AI_GROUP_WHITELIST=[]
 AI_REPLY_QUOTE=true
-"""
+
+{image_block}"""
 
 
 def write_env(form: dict, old: dict) -> dict:
@@ -672,6 +732,7 @@ def write_env(form: dict, old: dict) -> dict:
         botname=(form.get("botname") or "").strip(),
         persona=dotenv_quote((form.get("persona") or "").strip()),
         vision=vision,
+        image_block=build_image_env_block(old),
     )
     ENV_FILE.write_text(text, encoding="utf-8")
 
