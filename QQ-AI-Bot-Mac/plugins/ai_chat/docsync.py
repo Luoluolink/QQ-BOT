@@ -717,10 +717,26 @@ _HEADER_BLOCK = (
 
 
 async def bind_doc(gid: int, url_or_id: str) -> dict[str, Any]:
-    """绑定已有文档/表格。按链接类型分流验证，读不了就报错（提示加协作者）。"""
-    fid = parse_file_id(url_or_id) or url_or_id.strip()
+    """绑定已有文档/表格。按链接类型分流验证，读不了就报错（提示加协作者）。
+
+    只接受 docs.qq.com 链接（或裸 file_id）——按文档名字绑定不可靠：
+    云盘搜索是模糊匹配且搜不到协作者共享的文件，宁可明确让用户发链接。
+    """
+    raw = (url_or_id or "").strip()
+    fid = parse_file_id(raw)
+    if not fid and re.fullmatch(r"[A-Za-z0-9_$-]{8,}", raw):
+        fid = raw  # 裸 file_id（例如 300000000$XXXX）
     if not fid:
-        raise DocsApiError("链接里找不到文档 ID，请发完整的 docs.qq.com/doc/ 或 /sheet/ 链接")
+        if re.search(r"[\u4e00-\u9fff]", raw):
+            raise DocsApiError(
+                f"「{raw[:20]}」看起来是文档名字，但我认不了名字只能认链接——"
+                "把文档打开，复制浏览器地址栏里 docs.qq.com 开头的完整链接发我。\n"
+                "另外记得把机器人授权的那个腾讯文档账号加为文档协作者（可编辑），"
+                "不然我打开不了。"
+            )
+        raise DocsApiError(
+            "链接里找不到文档 ID——请发完整的 docs.qq.com/doc/… 或 /sheet/… 链接"
+        )
     kind = parse_kind(url_or_id)
     if kind == "sheet":
         # 表格：URL 里的 ID 要转成 bookID 才能用，顺便验证权限
