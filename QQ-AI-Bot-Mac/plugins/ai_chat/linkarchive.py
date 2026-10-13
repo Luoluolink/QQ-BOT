@@ -166,7 +166,7 @@ async def _archive_urls(event: GroupMessageEvent, urls: list[str]) -> None:
             continue
         try:
             status = await docsync.append_entry(gid, entry["title"], url, by)
-            if status not in ("ok", "dup", "未绑定", "未配置"):
+            if not (status == "ok" or status.startswith("ok:") or status in ("dup", "未绑定", "未配置")):
                 logger.warning(f"[ai_chat] 链接同步在线文档失败: {status}")
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[ai_chat] 链接同步在线文档异常: {exc!r}")

@@ -617,7 +617,8 @@ async def _sheet_append_entry(gid: int, title: str, url: str, info: dict[str, An
         entry[mapping["intro"]] = title
     # 分类列机器人判不了，留空给人填
     await _sheet_write(book_id, sid, target, [entry])
-    return "ok"
+    logger.info(f"[ai_chat] 表格收录: {name[:30]} -> 工作表「{sheet.get('title')}」第 {target} 行")
+    return f"ok:第{target}行"
 
 
 # ---- 条目格式 ----
@@ -943,8 +944,11 @@ async def _handle_collect_cmd(
         )
     by = entry.get("by") or "手动收录"
     status = await append_entry(gid, entry["title"], entry["url"], by)
-    if status == "ok":
-        await collect_cmd.finish(f"已收录进在线文档 ✅《{entry['title'][:40]}》")
+    if status == "ok" or status.startswith("ok:"):
+        line = status[3:] if status.startswith("ok:") else ""
+        await collect_cmd.finish(
+            f"已收录进在线文档 ✅《{entry['title'][:40]}》" + (f"（写在工作表{line}，在表格最底部）" if line else "")
+        )
     if status == "dup":
         await collect_cmd.finish(f"《{entry['title'][:40]}》已经在文档里了，不用重复收录")
     if status == "未绑定":

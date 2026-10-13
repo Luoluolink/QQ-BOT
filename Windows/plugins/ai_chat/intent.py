@@ -135,8 +135,9 @@ async def _exec_sync_to_doc(bot: Bot, event: GroupMessageEvent, args: dict, is_a
     if entry is None:
         return "没找到要收录的链接——告诉我链接地址，或者说个关键词让我在收藏库里找"
     status = await docsync.append_entry(gid, entry["title"], entry["url"], entry.get("by") or "手动收录")
-    if status == "ok":
-        return f"已收录进在线文档 ✅《{entry['title'][:40]}》"
+    if status == "ok" or status.startswith("ok:"):
+        line = status[3:] if status.startswith("ok:") else ""
+        return f"已收录进在线文档 ✅《{entry['title'][:40]}》" + (f"（写在工作表{line}，在表格最底部）" if line else "")
     if status == "dup":
         return f"《{entry['title'][:40]}》已经在文档里了，不用重复收录"
     if status == "未绑定":
