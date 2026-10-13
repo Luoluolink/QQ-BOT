@@ -320,3 +320,11 @@ class Config(BaseModel):
     ai_docs_client_id: str = ""
     ai_docs_access_token: str = ""
     ai_docs_open_id: str = ""
+    # 链接自动同步进在线文档的过滤模式（群级可用 /文档过滤 覆盖）：
+    #   all       全部同步（最脏，不推荐）
+    #   whitelist 只有域名白名单里的链接才同步（默认，预填常用站）
+    #   manual    从不自动同步，管理员说「把 xx 收进文档」才写
+    ai_docs_sync_mode: str = "whitelist"
+    # 全局默认白/黑名单（逗号分隔域名）。群级设置会覆盖这里。
+    ai_docs_domain_whitelist: str = ""
+    ai_docs_domain_blacklist: str = ""

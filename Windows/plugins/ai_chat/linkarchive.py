@@ -157,7 +157,13 @@ async def _archive_urls(event: GroupMessageEvent, urls: list[str]) -> None:
         if entry is None:
             continue
         logger.info(f"[ai_chat] 链接收藏: {entry['title'][:40]} <- {url[:60]}")
-        # 同步进在线文档：没绑定/没配置会在 append_entry 里返回状态，静默跳过
+        # 同步进在线文档前先过过滤闸（本地收藏库不受影响，永远全收）：
+        # whitelist 模式下只有白名单域名才写文档，manual 模式全靠管理员手动收录。
+        # 没绑定/没配置会在 append_entry 里返回状态，静默跳过。
+        ok, reason = docsync.should_sync(gid, url)
+        if not ok:
+            logger.info(f"[ai_chat] 链接未同步在线文档（{reason}）: {url[:60]}")
+            continue
         try:
             status = await docsync.append_entry(gid, entry["title"], url, by)
             if status not in ("ok", "未绑定", "未配置"):

@@ -107,6 +107,75 @@ async def _exec_doc_status(bot: Bot, event: GroupMessageEvent, args: dict, is_ad
 
 
 @_action(
+    "sync_to_doc",
+    "把群里发过的某个链接手动收录进绑定的在线文档（过滤规则挡掉的链接用这个手动补收）",
+    "keyword（链接本身或搜索关键词，可不填=最近一条）",
+    admin=True,
+)
+async def _exec_sync_to_doc(bot: Bot, event: GroupMessageEvent, args: dict, is_admin: bool) -> str | None:
+    gid = event.group_id
+    target = str(args.get("keyword") or "").strip()
+    entry: dict[str, Any] | None = None
+    if target.startswith("http"):
+        url = linkarchive.normalize_url(target)
+        for e in reversed(linkarchive._load().get(str(gid), [])):
+            if e["url"] == url:
+                entry = e
+                break
+        if entry is None:
+            title = await linkarchive.fetch_title(url) or url
+            entry = {"url": url, "title": title, "by": "", "time": ""}
+    else:
+        hits = (
+            linkarchive.search(gid, target, limit=1)
+            if target
+            else linkarchive.recent(gid, limit=1)
+        )
+        entry = hits[0] if hits else None
+    if entry is None:
+        return "没找到要收录的链接——告诉我链接地址，或者说个关键词让我在收藏库里找"
+    status = await docsync.append_entry(gid, entry["title"], entry["url"], entry.get("by") or "手动收录")
+    if status == "ok":
+        return f"已收录进在线文档 ✅《{entry['title'][:40]}》"
+    if status == "未绑定":
+        return "本群还没绑定在线文档：先对我说「绑定文档」或「创建文档」"
+    if status == "未配置":
+        return "腾讯文档 API 还没配置好（.env 需要 AI_DOCS 三项凭证）"
+    return f"收录失败：{status}"
+
+
+@_action(
+    "set_doc_filter",
+    "设置链接自动收录进在线文档的过滤规则：模式（all=全部/whitelist=白名单/manual=手动）或增删白名单域名",
+    "mode（all/whitelist/manual，可选）、add（要收录的域名，逗号分隔，可选）、remove（不再收录的域名，可选）",
+    admin=True,
+)
+async def _exec_set_doc_filter(bot: Bot, event: GroupMessageEvent, args: dict, is_admin: bool) -> str | None:
+    gid = event.group_id
+    mode_raw = str(args.get("mode") or "").strip()
+    mode = {"all": "all", "全部": "all", "全部同步": "all",
+            "白名单": "whitelist", "whitelist": "whitelist",
+            "手动": "manual", "manual": "manual"}.get(mode_raw, mode_raw or None)
+    add = [
+        d.strip()
+        for d in re.split(r"[,，\s]+", str(args.get("add") or ""))
+        if d.strip()
+    ]
+    remove = [
+        d.strip()
+        for d in re.split(r"[,，\s]+", str(args.get("remove") or ""))
+        if d.strip()
+    ]
+    if not mode and not add and not remove:
+        return docsync.filter_text(gid)
+    try:
+        docsync.set_filter(gid, mode=mode, add=add or None, remove=remove or None)
+    except ValueError as exc:
+        return str(exc)
+    return "已更新 ✅\n" + docsync.filter_text(gid)
+
+
+@_action(
     "find_image",
     "按内容关键词在群相册索引里找图（找的是用机器人存进相册的图）",
     "keyword（图片内容关键词）",
@@ -222,6 +291,7 @@ EXTRA_SPECS: dict[str, tuple[str, str, bool]] = {}
 _GATE_KEYWORDS = (
     # 文档
     "绑定", "创建文档", "建文档", "新建文档", "在线文档", "收集到文档", "存到文档",
+    "收进文档", "收录", "进文档", "文档过滤", "白名单", "只收",
     # 相册
     "找图", "找到那张", "哪张图", "那张", "的图", "图片在哪", "照片在哪", "相册里",
     # 链接

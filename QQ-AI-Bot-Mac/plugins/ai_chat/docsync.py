@@ -53,6 +53,7 @@ cfg = get_plugin_config(Config)
 
 _TOKEN_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "tdoc_token.json"
 _BINDING_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "doc_binding.json"
+_FILTER_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "doc_filter.json"
 
 _OAUTH_TOKEN_URL = "https://docs.qq.com/oauth/v2/token"
 _DRIVE_BASE = "https://docs.qq.com/openapi/drive/v2"
@@ -138,6 +139,161 @@ def configured() -> bool:
 
 def binding(gid: int) -> dict[str, Any] | None:
     return _bindings_map().get(str(gid))
+
+
+# ================================================================ 收录过滤
+#
+# 聊天里的链接鱼龙混杂，全塞进共享文档很快会变垃圾场。分两层：
+#   本地收藏库（linkarchive）：永远全收 —— 搜索/翻历史不受影响；
+#   在线文档同步：过 should_sync() 这道闸，三档模式：
+#       all       全同步
+#       whitelist 域名白名单才同步（默认，预填常用内容站）
+#       manual    从不自动同步，管理员手动收录
+#   白/黑名单支持群级覆盖（data/doc_filter.json），.env 里的是全局默认。
+
+# 白名单没配置时的内置兜底：常见「值得留档」的内容站。
+# 设计成元组便于测试；群级或 .env 一旦配置就整体覆盖这份默认。
+DEFAULT_WHITELIST: tuple[str, ...] = (
+    "bilibili.com", "b23.tv", "github.com", "juejin.cn",
+    "zhihu.com", "sspai.com", "mp.weixin.qq.com", "jikipedia.moe",
+)
+
+_MODES = ("all", "whitelist", "manual")
+
+_filter: dict[str, dict[str, Any]] | None = None
+
+
+def _filter_map() -> dict[str, dict[str, Any]]:
+    global _filter
+    if _filter is None:
+        try:
+            raw = json.loads(_FILTER_PATH.read_text(encoding="utf-8"))
+            _filter = raw if isinstance(raw, dict) else {}
+        except (OSError, ValueError):
+            _filter = {}
+    return _filter
+
+
+def _save_filter() -> None:
+    try:
+        _FILTER_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _FILTER_PATH.write_text(
+            json.dumps(_filter_map(), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def _split_domains(raw: str) -> list[str]:
+    """逗号/空格分隔的域名配置 → 干净的小写域名列表。"""
+    return [
+        d.strip().lower().lstrip(".")
+        for d in re.split(r"[,，\s]+", raw or "")
+        if d.strip()
+    ]
+
+
+def _domain_of(url: str) -> str:
+    """取 URL 的注册域名：小写、去端口、去 www. 前缀。"""
+    host = urllib.parse.urlparse(url).netloc.split(":")[0].lower()
+    if host.startswith("www."):
+        host = host[4:]
+    return host
+
+
+def _domain_matches(domain: str, list_: list[str]) -> bool:
+    """bilibili.com 应同时命中 www.bilibili.com 和 m.bilibili.com，但不要命中
+    fakebilibili.com —— 所以按「等于或以其为后缀」匹配。"""
+    return any(domain == d or domain.endswith("." + d) for d in list_)
+
+
+def _group_lists(gid: int) -> tuple[list[str], list[str]]:
+    """本群生效的 (白名单, 黑名单)。群级配置覆盖 .env 全局默认。"""
+    conf = _filter_map().get(str(gid)) or {}
+    wl = conf.get("whitelist")
+    bl = conf.get("blacklist")
+    wl_list = [str(x) for x in wl] if isinstance(wl, list) else _split_domains(cfg.ai_docs_domain_whitelist)
+    bl_list = [str(x) for x in bl] if isinstance(bl, list) else _split_domains(cfg.ai_docs_domain_blacklist)
+    if not wl_list and not isinstance(wl, list):
+        wl_list = list(DEFAULT_WHITELIST)
+    return wl_list, bl_list
+
+
+def sync_mode(gid: int) -> str:
+    conf = _filter_map().get(str(gid)) or {}
+    mode = conf.get("mode") or cfg.ai_docs_sync_mode
+    return mode if mode in _MODES else "whitelist"
+
+
+def should_sync(gid: int, url: str) -> tuple[bool, str]:
+    """判定这条链接该不该自动写进在线文档。返回 (是否同步, 原因)。"""
+    mode = sync_mode(gid)
+    if mode == "manual":
+        return False, "manual"
+    domain = _domain_of(url)
+    wl, bl = _group_lists(gid)
+    if _domain_matches(domain, bl):
+        return False, "blacklist"
+    if mode == "all":
+        return True, "all"
+    if _domain_matches(domain, wl):
+        return True, "whitelist"
+    return False, "unlisted"
+
+
+def set_filter(
+    gid: int,
+    mode: str | None = None,
+    add: list[str] | None = None,
+    remove: list[str] | None = None,
+) -> None:
+    """改本群的过滤配置。「加」= 收进白名单（同时移出黑名单）；
+    「删」= 拉进黑名单（同时移出白名单）。域名可以是裸域名或完整链接。"""
+    if mode is not None and mode not in _MODES:
+        raise ValueError(f"未知模式 {mode!r}")
+    conf = _filter_map().setdefault(str(gid), {})
+    if mode is not None:
+        conf["mode"] = mode
+    if add or remove:
+        wl, bl = _group_lists(gid)
+
+        def clean(d: str) -> str:
+            return _domain_of(d if "://" in d else "https://" + d)
+
+        for d in add or []:
+            d = clean(d)
+            if d and d not in wl:
+                wl.append(d)
+            bl[:] = [x for x in bl if x != d]
+        for d in remove or []:
+            d = clean(d)
+            if d and d not in bl:
+                bl.append(d)
+            wl[:] = [x for x in wl if x != d]
+        conf["whitelist"] = wl
+        conf["blacklist"] = bl
+    _save_filter()
+
+
+def filter_text(gid: int) -> str:
+    """/文档过滤 无参时的人话状态。"""
+    mode = sync_mode(gid)
+    wl, bl = _group_lists(gid)
+    mode_desc = {
+        "all": "全部同步（群里发的所有链接都写进文档）",
+        "whitelist": "白名单模式（只有白名单域名的链接才写进文档，本地收藏库不受影响）",
+        "manual": "手动模式（从不自动写文档；对我说「把 xx 链接收进文档」才写）",
+    }[mode]
+    lines = [f"文档收录过滤：{mode_desc}"]
+    if mode != "manual":
+        lines.append("白名单：" + ("、".join(wl) if wl else "（空）"))
+        if bl:
+            lines.append("黑名单：" + "、".join(bl))
+    lines.append(
+        "改法：/文档过滤 模式 all|白名单|手动；/文档过滤 加 域名；/文档过滤 删 域名（管理员）"
+    )
+    return "\n".join(lines)
 
 
 def _is_admin(event: GroupMessageEvent) -> bool:
@@ -514,6 +670,82 @@ def _binding_text(gid: int) -> str:
 
 bind_doc_cmd = on_command("绑定文档", rule=to_me(), priority=10, block=True)
 create_doc_cmd = on_command("创建文档", rule=to_me(), priority=10, block=True)
+filter_cmd = on_command("文档过滤", rule=to_me(), priority=10, block=True)
+collect_cmd = on_command("收录", rule=to_me(), priority=10, block=True)
+
+
+@filter_cmd.handle()
+async def _handle_filter(
+    bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()
+) -> None:
+    parts = args.extract_plain_text().split()
+    gid = event.group_id
+    if not parts:
+        await filter_cmd.finish(filter_text(gid))
+    if not _is_admin(event):
+        await filter_cmd.finish("只有群主或管理员可以改收录过滤规则")
+    sub = parts[0]
+    try:
+        if sub in ("模式", "模式设为", "set") and len(parts) >= 2:
+            mode_raw = parts[1]
+            mode = {"all": "all", "全部": "all", "全部同步": "all",
+                    "白名单": "whitelist", "whitelist": "whitelist",
+                    "手动": "manual", "manual": "manual"}.get(mode_raw, mode_raw)
+            set_filter(gid, mode=mode)
+        elif sub in ("加", "添加", "add") and len(parts) >= 2:
+            set_filter(gid, add=parts[1:])
+        elif sub in ("删", "删除", "移除", "del", "remove") and len(parts) >= 2:
+            set_filter(gid, remove=parts[1:])
+        else:
+            await filter_cmd.finish(
+                "用法：/文档过滤 —— 看当前规则\n"
+                "/文档过滤 模式 all|白名单|手动\n"
+                "/文档过滤 加 bilibili.com github.com\n"
+                "/文档过滤 删 xxx.com"
+            )
+    except ValueError as exc:
+        await filter_cmd.finish(str(exc))
+    await filter_cmd.finish("已更新 ✅\n" + filter_text(gid))
+
+
+@collect_cmd.handle()
+async def _handle_collect_cmd(
+    bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()
+) -> None:
+    """手动收录：/收录 关键词（在收藏库里找）或 /收录 完整链接。"""
+    if not _is_admin(event):
+        await collect_cmd.finish("只有群主或管理员可以手动收录进文档")
+    target = args.extract_plain_text().strip()
+    from . import linkarchive  # 延迟导入避免包初始化顺序问题
+
+    gid = event.group_id
+    entry: dict[str, Any] | None = None
+    if target.startswith("http"):
+        url = linkarchive.normalize_url(target)
+        for e in reversed(linkarchive._load().get(str(gid), [])):
+            if e["url"] == url:
+                entry = e
+                break
+        if entry is None:
+            # 收藏库里没有（比如刚被挤掉）也照收：现场抓标题
+            title = await linkarchive.fetch_title(url) or url
+            entry = {"url": url, "title": title, "by": "", "time": ""}
+    else:
+        hits = linkarchive.search(gid, target, limit=1) if target else linkarchive.recent(gid, limit=1)
+        entry = hits[0] if hits else None
+    if entry is None:
+        await collect_cmd.finish(
+            "没找到要收录的链接——发 /收录 关键词（在收藏库找），或 /收录 完整链接"
+        )
+    by = entry.get("by") or "手动收录"
+    status = await append_entry(gid, entry["title"], entry["url"], by)
+    if status == "ok":
+        await collect_cmd.finish(f"已收录进在线文档 ✅《{entry['title'][:40]}》")
+    if status == "未绑定":
+        await collect_cmd.finish("本群还没绑定在线文档：先 /绑定文档 链接 或 /创建文档 标题")
+    if status == "未配置":
+        await collect_cmd.finish("腾讯文档 API 还没配置好（.env 需要 AI_DOCS 三项凭证）")
+    await collect_cmd.finish(f"收录失败：{status}")
 
 
 @bind_doc_cmd.handle()
