@@ -49,7 +49,12 @@ from pathlib import Path
 
 # ---------------------------------------------------------------- 常量
 
-ROOT = Path(__file__).resolve().parent
+# 打包成 exe 后 __file__ 指向解包临时目录，配置/网页/NapCat 都得以 exe 所在目录为准
+ROOT = (
+    Path(sys.executable).resolve().parent
+    if getattr(sys, "frozen", False)
+    else Path(__file__).resolve().parent
+)
 VENV_DIR = ROOT / ".venv"
 ENV_FILE = ROOT / ".env"
 REQUIREMENTS = ROOT / "requirements.txt"
@@ -576,6 +581,46 @@ def new_token() -> str:
     return "qbot_" + secrets.token_hex(8)
 
 
+def dotenv_unquote(text: str) -> str:
+    """dotenv_value 的逆操作：去掉外层引号并还原转义。
+
+    python-dotenv 在双引号值里会还原 \\n、\\t、\\" 与 \\\\，
+    这里按同样的规则还原，保证写进 .env 的人设读回来和当初输入一致。
+    """
+    t = text.strip()
+    if len(t) >= 2 and t[0] == '"' and t[-1] == '"':
+        t = t[1:-1]
+        out: list[str] = []
+        i = 0
+        while i < len(t):
+            ch = t[i]
+            if ch == "\\" and i + 1 < len(t):
+                nxt = t[i + 1]
+                out.append({"n": "\n", "t": "\t", '"': '"', "\\": "\\"}.get(nxt, "\\" + nxt))
+                i += 2
+            else:
+                out.append(ch)
+                i += 1
+        t = "".join(out)
+    return t
+
+
+def saved_config() -> dict:
+    """读取 .env 里上次保存的配置，给网页面板回填用。
+
+    键名与 ENV_HEADER 写入的一致；都取不到就返回空串，网页端自行留空。
+    """
+    env = read_env()
+    return {
+        "qq": env.get("BOT_QQ", ""),
+        "botname": env.get("AI_BOT_NAME", ""),
+        "base": env.get("AI_API_BASE", ""),
+        "key": env.get("AI_API_KEY", ""),
+        "model": env.get("AI_MODEL", ""),
+        "persona": dotenv_unquote(env.get("AI_SYSTEM_PROMPT", "")),
+    }
+
+
 def dotenv_quote(text: str) -> str:
     """把多行文本转成 dotenv 能读回来的双引号形式。
 
@@ -589,6 +634,65 @@ def dotenv_quote(text: str) -> str:
         .replace("\n", "\\n")
     )
     return f'"{escaped}"'
+
+
+# 生图（ComfyUI）相关配置：这些项不放启动器网页上，但重写 .env 时必须原样保留，
+# 否则用户在 .env 里配好的生图参数会被启动器悄悄重置回默认值。
+IMAGE_ENV_KEYS: list[tuple[str, str]] = [
+    ("AI_IMAGE_ENABLED", "false"),
+    ("AI_IMAGE_API_BASE", "http://127.0.0.1:8188"),
+    ("AI_IMAGE_DEFAULT_MODEL", ""),
+    ("AI_IMAGE_DEFAULT_NEGATIVE", "低质量, 模糊, 变形, 多余的手指, 文字, 水印"),
+    ("AI_IMAGE_STEPS", "20"),
+    ("AI_IMAGE_CFG", "7.0"),
+    ("AI_IMAGE_SAMPLER", "euler"),
+    ("AI_IMAGE_SCHEDULER", "normal"),
+    ("AI_IMAGE_WIDTH", "512"),
+    ("AI_IMAGE_HEIGHT", "512"),
+    ("AI_IMAGE_MAX_WIDTH", "1024"),
+    ("AI_IMAGE_MAX_HEIGHT", "1024"),
+    ("AI_IMAGE_BATCH", "1"),
+    ("AI_IMAGE_TIMEOUT", "180"),
+    ("AI_IMAGE_POLL", "0.8"),
+    ("AI_IMAGE_SAVE_DIR", "data/images"),
+    ("AI_IMAGE_KEEP", "200"),
+    ("AI_IMAGE_COOLDOWN", "30"),
+    ("AI_IMAGE_DAILY_LIMIT", "20"),
+    ("AI_IMAGE_ANNOUNCE", "true"),
+    ("AI_IMAGE_NL_TRIGGER", "false"),
+    ("AI_IMAGE_MODELS_TTL", "300"),
+    ("AI_IMAGE_MAX_PROMPT", "300"),
+]
+
+IMAGE_ENV_HEADER = """# ---------- 本地 ComfyUI 生图（可选）----------
+# 让 ComfyUI 在本机跑起来，把 AI_IMAGE_ENABLED 改成 true，
+# 群里发「/画 一只猫」就能出图；发 /画图模型 看本机支持哪些模型。
+# 启动器不会改动下面这些行，可以放心手改。
+# 完整参数说明见同目录 .env.example。
+"""
+
+
+def dotenv_value(value: str) -> str:
+    """需要时给值加引号。带 # 的值不加引号会被 dotenv 当成注释截断。"""
+    text = str(value)
+    if any(ch in text for ch in '#"') or text != text.strip():
+        escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    return text
+
+
+def build_image_env_block(old: dict) -> str:
+    """生成生图配置块。
+
+    取值优先级：.env 里已有的 > 默认值。
+    注意判的是「键存不存在」而不是「值是否为空」—— 用户手动把某项清空
+    （例如不想要默认负向词）也应该被尊重，不能被默认值塞回来。
+    """
+    lines = [IMAGE_ENV_HEADER.rstrip()]
+    for key, default in IMAGE_ENV_KEYS:
+        value = old[key] if key in old else default
+        lines.append(f"{key}={dotenv_value(value)}")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 ENV_HEADER = """# ============================================================
@@ -640,7 +744,8 @@ AI_COOLDOWN=5
 AI_DAILY_LIMIT=200
 AI_GROUP_WHITELIST=[]
 AI_REPLY_QUOTE=true
-"""
+
+{image_block}"""
 
 
 def write_env(form: dict, old: dict) -> dict:
@@ -662,8 +767,18 @@ def write_env(form: dict, old: dict) -> dict:
         else "true"
     )
 
+    # 机器人核心的监听端口：沿用 .env 里已有的；没有、或已被别的程序占着
+    # （比如 Steam webhelper 恰好蹲在 8080，NapCat 反连它会得到 404），
+    # 就自动找一个空闲端口。NapCat 的反连地址由 write_napcat_config 按
+    # 同一份 env 写入，两边永远一致。
+    port_old = (old.get("PORT") or "").strip()
+    if port_old.isdigit() and not port_in_use(int(port_old)):
+        port = int(port_old)
+    else:
+        port = free_port(PORT_NONEBOT)
+
     text = ENV_HEADER.format(
-        port=PORT_NONEBOT,
+        port=port,
         token=token,
         qq=(form.get("qq") or "").strip(),
         base=base,
@@ -672,6 +787,7 @@ def write_env(form: dict, old: dict) -> dict:
         botname=(form.get("botname") or "").strip(),
         persona=dotenv_quote((form.get("persona") or "").strip()),
         vision=vision,
+        image_block=build_image_env_block(old),
     )
     ENV_FILE.write_text(text, encoding="utf-8")
 
@@ -1070,7 +1186,11 @@ def run_pipeline(py: Path, form: dict, skip_napcat: bool = False) -> None:
             _push_log(f"端口 {port} 已被占用，可能已经有一个机器人在跑")
 
         no_proxy = {"NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"}
-        spawn("机器人核心", [str(py), "bot.py"], ROOT, no_proxy)
+        if getattr(sys, "frozen", False):
+            # 打包版没有独立的 python，用 exe 自身的 --run-bot 模式充当机器人核心
+            spawn("机器人核心", [str(py), "--run-bot"], ROOT, no_proxy)
+        else:
+            spawn("机器人核心", [str(py), "bot.py"], ROOT, no_proxy)
 
         _set(text=f"等待机器人核心就绪（127.0.0.1:{port}）…")
         if wait_port(port, 30):
@@ -1207,6 +1327,11 @@ class WebHandler(BaseHTTPRequestHandler):
         if path == "/api/progress":
             with STATE_LOCK:
                 self._json(dict(STATE))
+            return
+
+        if path == "/api/config":
+            # 上次保存的配置，网页加载时回填表单（首次使用时字段为空）
+            self._json(saved_config())
             return
 
         if path in ("/", "/index.html"):
@@ -1457,12 +1582,17 @@ def main() -> int:
     # 换图标这事和启动流程无关，丢后台线程，别让它挡路
     make_shortcut_async()
 
-    step(1, 4, "检查 Python 环境")
-    check_python()
+    if getattr(sys, "frozen", False):
+        # 打包版：Python 与全部依赖已内置在 exe 里，跳过环境检查与装依赖
+        ok("内置运行时就绪（打包版无需安装 Python 与依赖）")
+        py = Path(sys.executable)
+    else:
+        step(1, 4, "检查 Python 环境")
+        check_python()
 
-    step(2, 4, "准备虚拟环境与依赖")
-    py = ensure_venv()
-    ensure_deps(py)
+        step(2, 4, "准备虚拟环境与依赖")
+        py = ensure_venv()
+        ensure_deps(py)
 
     LAUNCH_PY = py
     LAUNCH_SKIP_NAPCAT = args.skip_napcat

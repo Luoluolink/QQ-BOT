@@ -14,6 +14,8 @@ logs/
 # 配置与密钥
 .env
 .env.*
+# 但配置模板要跟着仓库走 —— 上面的 .env.* 会把它一起排除掉，这里捞回来
+!.env.example
 config_local.py
 
 # 系统 / 编辑器
@@ -27,7 +29,20 @@ desktop.ini
 *.tmp
 *.bak
 
+# 生图功能：真实 ComfyUI 测试（--live）的出图产物
+程序/tests/_live_out/
+
 # 备份/预览文件
 程序/launcher-backup.ico
 程序/web/bg-backup.jpg
 程序/web/icon-rounded-preview.png
+
+# exe 打包产物
+build_exe/
+dist_exe/
+release/
+
+# 安装器构建产物
+build_installer/
+dist_installer/
+_setup_test/

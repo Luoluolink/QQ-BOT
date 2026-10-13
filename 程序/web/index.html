@@ -644,6 +644,24 @@ applyVendor("mimo");
 $("#persona").value = DEFAULT_PERSONA;
 autoGrow($("#persona"));
 
+/* 回填上次保存的配置：.env 里有就自动填进表单，改完再点保存会覆盖 */
+(async () => {
+  try {
+    const r = await fetch("/api/config", { cache: "no-store" });
+    if (!r.ok) return;
+    const s = await r.json();
+    if (!s || (!s.qq && !s.base && !s.key)) return;  // 首次使用，保持默认
+    const v = VENDORS.find(x => x.base === s.base);
+    if (v) { vendorEl.value = v.id; applyVendor(v.id); }
+    if (s.qq) $("#qq").value = s.qq;
+    if (s.botname) $("#botname").value = s.botname;
+    if (s.base) baseEl.value = s.base;
+    if (s.model) modelEl.value = s.model;
+    if (s.key) $("#key").value = s.key;
+    if (s.persona) { $("#persona").value = s.persona; autoGrow($("#persona")); }
+  } catch (e) { /* 接口不可用就静默保持默认 */ }
+})();
+
 vendorEl.addEventListener("change", () => applyVendor(vendorEl.value));
 
 $("#toggleKey").addEventListener("click", () => {
