@@ -106,7 +106,7 @@ async def main() -> None:
     status = await docsync._sheet_append_entry(
         gid, "一个好网站", "https://new-site.com/page", docsync.binding(gid)
     )
-    check("正常追加返回 ok", status == "ok")
+    check("正常追加返回 ok", status == "ok" or status.startswith("ok:"), status)
     puts = [c for c in calls if c.get("method") == "PUT"]
     check("只发了一次 PUT", len(puts) == 1)
     body = (puts[0].get("payload") or {}).get("values") or []
@@ -136,7 +136,7 @@ async def main() -> None:
     status3 = await docsync._sheet_append_entry(
         gid, "第一条", "https://first.com/x", docsync.binding(gid)
     )
-    check("空表追加返回 ok", status3 == "ok")
+    check("空表追加返回 ok", status3 == "ok" or status3.startswith("ok:"), status3)
     puts3 = [c for c in calls if c.get("method") == "PUT"]
     check("空表发了两次 PUT（表头+条目）", len(puts3) == 2, len(puts3))
     header_row = (puts3[0].get("payload") or {}).get("values") or [[]]
@@ -163,7 +163,7 @@ async def main() -> None:
     status4 = await docsync._sheet_append_entry(
         gid, "兜底条目", "https://fallback.com/", docsync.binding(gid)
     )
-    check("无表头追加返回 ok", status4 == "ok")
+    check("无表头追加返回 ok", status4 == "ok" or status4.startswith("ok:"), status4)
     puts4 = [c for c in calls if c.get("method") == "PUT"]
     check("写在第 4 行", puts4 and "A4%3AD4" in puts4[0]["url"], puts4[0]["url"] if puts4 else "")
     row4 = (puts4[0].get("payload") or {}).get("values") or [[]]

@@ -29,13 +29,34 @@ from typing import Any, Awaitable, Callable
 from nonebot import get_plugin_config, logger
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message
 
-from . import album_index, docsync, linkarchive, memory
+from .ai_client import make_client
+from . import album_index, docsync, essence, linkarchive, memory, resource_index
 from .config import Config
 
 cfg = get_plugin_config(Config)
 
 # 路由用的 OpenAI 客户端（懒加载；测试可注入假客户端）
 _client: Any = None
+
+_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+
+
+def _extract_url(text: str) -> str:
+    """从消息文本里抠第一条链接（末尾标点容易黏在 URL 上，顺手剥掉）。"""
+    m = _URL_RE.search(text or "")
+    if not m:
+        return ""
+    url = m.group(0).rstrip("。，,！!？?）)】》\"'")
+    return url
+
+
+def _sender_name(event: GroupMessageEvent) -> str:
+    sender = getattr(event, "sender", None)
+    return (
+        getattr(sender, "card", "")
+        or getattr(sender, "nickname", "")
+        or "?"
+    )
 
 # ================================================================ 动作注册表
 
@@ -107,6 +128,16 @@ async def _exec_doc_status(bot: Bot, event: GroupMessageEvent, args: dict, is_ad
 
 
 @_action(
+    "read_doc",
+    "读本群绑定的在线文档或表格的内容：看最近收录了什么，或按关键词在文档里找某条内容",
+    "keyword（可选，要找的关键词；不填=看最近的）",
+)
+async def _exec_read_doc(bot: Bot, event: GroupMessageEvent, args: dict, is_admin: bool) -> str | None:
+    kw = str(args.get("keyword") or "").strip()
+    return await docsync.read_bound_text(event.group_id, kw)
+
+
+@_action(
     "sync_to_doc",
     "把群里发过的某个链接手动收录进绑定的在线文档（过滤规则挡掉的链接用这个手动补收）",
     "keyword（链接本身或搜索关键词，可不填=最近一条）",
@@ -142,6 +173,34 @@ async def _exec_sync_to_doc(bot: Bot, event: GroupMessageEvent, args: dict, is_a
         return f"《{entry['title'][:40]}》已经在文档里了，不用重复收录"
     if status == "未绑定":
         return "本群还没绑定在线文档：先对我说「绑定文档」或「创建文档」"
+    if status == "未配置":
+        return "腾讯文档 API 还没配置好（.env 需要 AI_DOCS 三项凭证）"
+    return f"收录失败：{status}"
+
+
+@_action(
+    "save_link",
+    "把一条链接立即收录进本群绑定的在线文档（所有群成员都可以用，不受过滤规则限制）",
+    "url（要收录的链接；参数没带时会从原消息里找）",
+)
+async def _exec_save_link(bot: Bot, event: GroupMessageEvent, args: dict, is_admin: bool) -> str | None:
+    url = str(args.get("url") or "").strip()
+    if not url:
+        url = _extract_url(event.get_plaintext())
+    if not url:
+        return "要收录的链接呢？@我并贴上完整链接就行，比如「@我 https://...」"
+    title = str(args.get("title") or "").strip()
+    if not title:
+        title = await linkarchive.fetch_title(url) or url
+    status = await docsync.append_entry(event.group_id, title, url, _sender_name(event))
+    short = title[:40]
+    if status == "ok" or status.startswith("ok:"):
+        line = status[3:] if status.startswith("ok:") else ""
+        return f"已收录进在线文档 ✅《{short}》" + (f"（写在工作表{line}）" if line else "")
+    if status == "dup":
+        return f"《{short}》已经在文档里了，不用重复收录"
+    if status == "未绑定":
+        return "本群还没绑定在线文档——请群主或管理员先对我说「绑定文档 + 链接」或「创建文档」"
     if status == "未配置":
         return "腾讯文档 API 还没配置好（.env 需要 AI_DOCS 三项凭证）"
     return f"收录失败：{status}"
@@ -236,6 +295,96 @@ async def _exec_search_links(bot: Bot, event: GroupMessageEvent, args: dict, is_
 
 
 @_action(
+    "fetch_resource",
+    "综合调取资源：在群文件、群相册、群精华消息、链接收藏、本群绑定的在线文档里"
+    "按关键词找东西，群文件会换成下载链接直接发出来",
+    "keyword（要找的关键词）",
+)
+async def _exec_fetch_resource(bot: Bot, event: GroupMessageEvent, args: dict, is_admin: bool) -> str | None:
+    kw = str(args.get("keyword") or "").strip()
+    if not kw:
+        kw = _extract_url(event.get_plaintext()) or ""
+    if not kw:
+        return "要找什么？给我个关键词，比如「虚拟机」「团建照片」"
+    gid = event.group_id
+    sections: list[str] = []
+
+    # ---- 1) 群文件 + 群相册：找到就尽量换成可下载的链接 ----
+    try:
+        index = await resource_index.get_index(bot, gid, ttl=cfg.ai_file_index_ttl)
+        if not index.error:
+            hits = resource_index.search(index, kw, limit=5)
+            # 决定性命中：关键词完整出现在文件名里（如「图吧工具箱」⊂「图吧工具箱202601.7z」）
+            # 就只出精确匹配，不再把模糊沾边的工具一股脑念出来
+            core = resource_index._normalize(kw)
+            exact = [
+                e for e in hits
+                if core and core in resource_index._normalize(e.name)
+            ]
+            for e in (exact or hits[:3]):
+                url = e.url
+                if not url and e.file_id:
+                    try:
+                        data = await bot.call_api(
+                            "get_group_file_url", group_id=gid, file_id=e.file_id
+                        )
+                        url = str(data.get("url") or "")
+                    except Exception as exc:  # noqa: BLE001
+                        logger.info(f"[ai_chat] 取群文件下载链接失败: {exc!r}")
+                bits = [f"{e.name}（{e.where}"]
+                if e.uploader:
+                    bits.append(f"{e.uploader}上传")
+                if e.size:
+                    bits.append(resource_index.fmt_size(e.size))
+                line = "，".join(bits) + "）"
+                if url:
+                    line += f"\n   下载: {url}\n   （链接有时效，失效了让我再调一次）"
+                else:
+                    line += "\n   （下载链接没取到，可以在群文件里按名字直接找）"
+                sections.append("群文件找到：" + line)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[ai_chat] 调取-群文件检索失败: {exc!r}")
+
+    # ---- 2) 群精华消息 ----
+    try:
+        eidx = await essence.get_index(
+            bot, gid, ttl=cfg.ai_essence_index_ttl
+        )
+        if eidx.error:
+            logger.info(f"[ai_chat] 调取-精华索引不可用: {eidx.error}")
+        else:
+            emsgs = essence.search(eidx, kw, limit=3)
+            for m in emsgs:
+                snippet = (m.text or "").strip()[:80] or "（非文字内容）"
+                sections.append(f"群精华（{m.who} {m.when} 设）：{snippet}")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[ai_chat] 调取-精华检索失败: {exc!r}")
+
+    # ---- 3) 链接收藏库 ----
+    try:
+        for e in linkarchive.search(gid, kw, limit=3):
+            sections.append(f"链接收藏：{e.get('title', '')[:40]}\n   {e['url']}")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[ai_chat] 调取-链接收藏检索失败: {exc!r}")
+
+    # ---- 4) 本群绑定的在线文档 ----
+    try:
+        doc_text = await docsync.read_bound_text(gid, kw, limit=5)
+        if doc_text and "还没有收录" not in doc_text and "没有和" not in doc_text:
+            # read_bound_text 末尾自带完整文档链接，直接引用
+            sections.append("在线文档里找到：\n" + doc_text)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[ai_chat] 调取-在线文档读取失败: {exc!r}")
+
+    if not sections:
+        return (
+            f"群文件、群相册、群精华、链接收藏、在线文档里都没找到和「{kw}」相关的东西。"
+            "如果应该是文件，可能是群文件里没有，或者还没人发过～"
+        )
+    return f"关于「{kw}」找到这些：\n\n" + "\n\n".join(sections)
+
+
+@_action(
     "remember",
     "让机器人长期记住一条事实（之后相关问题会自动想起来）",
     "fact（要记住的内容，120 字以内）",
@@ -295,10 +444,24 @@ _GATE_KEYWORDS = (
     # 文档
     "绑定", "创建文档", "建文档", "新建文档", "在线文档", "收集到文档", "存到文档",
     "收进文档", "收录", "进文档", "文档过滤", "白名单", "只收",
+    # 读文档
+    "读文档", "看看文档", "文档里", "文档内容", "文档有", "文档都", "查文档", "搜文档",
+    "念念文档", "文档里有什么", "最近收录", "读一下绑定", "打开文档",
     # 相册
     "找图", "找到那张", "哪张图", "那张", "的图", "图片在哪", "照片在哪", "相册里",
     # 链接
     "收藏的链接", "链接收藏", "发过的链接", "之前的链接", "翻链接", "链接库",
+    # 收录链接（所有人可用）
+    "存文档", "存一下", "存进文档", "收藏一下", "收藏这个", "帮我收",
+    # 调取资源
+    "调取", "调出来", "提取", "发给我", "发我", "下载", "群文件", "精华",
+    "找文件", "找资源", "帮我找", "帮我看看有没有",
+    # 索取/投递类说法（「图吧工具箱发一下」这种没有资源名词的句子也要进路由）
+    "发一下", "发个", "发来", "来一份", "来个", "给一份", "给个", "分享",
+    "求", "想要", "有吗", "有没有", "在哪", "哪里有",
+    # 常见资源名词（裸名词@也可能是在找东西，交给路由判断）
+    "工具箱", "软件", "安装包", "补丁", "驱动", "电子书", "网盘", "资源",
+    "压缩包", "安装教程", "虚拟机", "模拟器",
     # 记忆
     "记住", "记一下", "忘记", "忘了", "记忆",
     # 人设
@@ -307,8 +470,14 @@ _GATE_KEYWORDS = (
 
 
 def looks_actionable(text: str) -> bool:
-    """正则预筛：不含任何候选关键词的消息直接走聊天，不进路由（省钱省时延）。"""
+    """正则预筛：不含任何候选关键词的消息直接走聊天，不进路由（省钱省时延）。
+
+    带链接的 @ 消息永远进路由——「@我 + 链接」是所有人可用的收录入口，
+    哪怕一个关键词都没说（路由模型自己判断是想收录还是随口聊链接）。
+    """
     t = (text or "").lower()
+    if _URL_RE.search(t):
+        return True
     return any(k in t for k in _GATE_KEYWORDS)
 
 
@@ -330,6 +499,10 @@ def _router_prompt() -> str:
     lines += [
         "判定原则：",
         "- 消息带明确动作意图（绑定/创建/找图/翻链接/记住/忘记/换人设/查状态）才选对应功能；",
+        "- 消息里有 http 链接：用户想让保存/收录进文档 → save_link；"
+        "只是分享链接求点评或提问 → chat；",
+        "- 用户要找/调取群里的东西（文件、图片、视频、资料、精华、文档内容）→ fetch_resource；",
+        "- 「XX发一下」「XX发我」「有没有XX」「求XX」这类索取句式 → fetch_resource（keyword=XX）；",
         "- 问问题、闲聊、要知识、要创作 → chat；",
         "- 是普通提问但恰好含有功能关键词（比如「文档是什么意思」）→ chat；",
         "- 拿不准 → chat。",
@@ -353,11 +526,9 @@ def _extract_json(text: str) -> dict | None:
 
 async def _classify(text: str) -> dict:
     """调路由模型。返回 {"action": ..., "args": ...}，解析失败按 chat 处理。"""
-    from openai import AsyncOpenAI
-
     global _client
     if _client is None:
-        _client = AsyncOpenAI(api_key=cfg.ai_api_key, base_url=cfg.ai_api_base)
+        _client = make_client(cfg.ai_api_key, cfg.ai_api_base, cfg.ai_proxy)
     client = _client
     kwargs: dict = {
         "model": cfg.ai_model,

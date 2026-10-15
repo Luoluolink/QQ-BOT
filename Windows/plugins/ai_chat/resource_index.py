@@ -253,6 +253,8 @@ def _media_entries(album_name: str, media_list: list) -> list[ResourceEntry]:
 
 async def _fetch_albums(bot: Bot, group_id: int, index: GroupIndex) -> None:
     try:
+        # 注意：NapCat 的真实接口名是 get_qun_album_list（4.18+ 群组扩展），
+        # 没有 get_group_album_list 这个名字，用了会报 retcode 1404
         albums = await _call(bot, "get_qun_album_list", group_id=str(group_id))
     except Exception as exc:  # noqa: BLE001
         logger.info(f"[ai_chat] 该群没有群相册接口或读取失败，跳过: {exc}")

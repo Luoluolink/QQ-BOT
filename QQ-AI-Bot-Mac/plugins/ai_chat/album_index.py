@@ -146,9 +146,9 @@ async def generate_desc(image_payload: str) -> str:
             ],
         }
     ]
-    from openai import AsyncOpenAI
+    from .ai_client import make_client
 
-    client = AsyncOpenAI(api_key=cfg.ai_api_key, base_url=cfg.ai_api_base)
+    client = make_client(cfg.ai_api_key, cfg.ai_api_base, cfg.ai_proxy)
     try:
         resp = await asyncio.wait_for(
             client.chat.completions.create(

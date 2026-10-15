@@ -44,6 +44,7 @@ from nonebot.plugin import PluginMetadata
 from nonebot.rule import Rule, to_me
 from openai import AsyncOpenAI
 
+from .ai_client import make_client
 from . import (
     admin,
     album,
@@ -214,6 +215,9 @@ RESOURCE_KEYWORDS = (
     "压缩包", "课件", "ppt", "讲义",
     "有没有", "有没有人", "找一下", "找找", "搜一下", "搜搜",
     "在哪", "在哪个", "哪个文件夹", "共享",
+    # 实测教训：问「虚拟机」时触发词全没命中，检索层整个被跳过，
+    # 模型顺着聊天历史编了个不存在的安装包。补上常见的资源类名词。
+    "安装包", "补丁", "驱动", "电子书", "种子", "网盘", "资源",
 )
 
 _client: AsyncOpenAI | None = None
@@ -225,7 +229,7 @@ def get_client() -> AsyncOpenAI:
     if _client is None:
         if not cfg.ai_api_key:
             raise RuntimeError("未配置 AI_API_KEY，请检查 .env 文件")
-        _client = AsyncOpenAI(api_key=cfg.ai_api_key, base_url=cfg.ai_api_base)
+        _client = make_client(cfg.ai_api_key, cfg.ai_api_base, cfg.ai_proxy)
     return _client
 
 
@@ -673,6 +677,21 @@ def _looks_rejected(reply: str) -> bool:
     return 0 < len(reply) < 120 and bool(_RISK_REJECT_PAT.search(reply))
 
 
+# 模型幻觉：冒充系统输出「审核通知」之类的罐头文本
+# （实测 mimo 对「Step-5-Preview 是谁家的模型」这类问题吐出过
+#   「【系统提示：本条消息为系统自动内容审核通知，非群成员发言，无需归档…】」）。
+# 特征组合要具体：单有「系统提示」会误杀正常讲电脑操作的长回复。
+_FAKE_NOTICE_RE = re.compile(r"【?\s*系统提示[^】]{0,80}】?", re.IGNORECASE)
+_FAKE_NOTICE_HINTS = ("审核", "归档", "非群成员", "自动内容")
+
+
+def _looks_fake_notice(reply: str) -> bool:
+    """识别模型冒充系统发出的假「内容审核通知」。"""
+    return len(reply) < 200 and bool(_FAKE_NOTICE_RE.search(reply)) and any(
+        h in reply for h in _FAKE_NOTICE_HINTS
+    )
+
+
 async def _complete_with_reject_retry(
     bot: Bot,
     messages: list[dict],
@@ -693,7 +712,25 @@ async def _complete_with_reject_retry(
     )
     reply = (resp.choices[0].message.content or "").strip()
     if not _looks_rejected(reply):
-        return resp
+        if not _looks_fake_notice(reply):
+            return resp
+        # 假系统通知：带着纠偏提示重试一次，重试结果不再二次校验
+        logger.warning(f"[ai_chat] 回复疑似模型幻觉的系统通知，纠偏重试: {reply[:80]!r}")
+        fixup = messages + [
+            {
+                "role": "user",
+                "content": "（刚才你的回复输出了一段不存在的系统审核通知，这是错误的。"
+                "请直接正常回答上一个问题，绝不要输出任何「系统提示/内容审核通知」样式的文字。）",
+            }
+        ]
+        resp = await _complete_with_images(
+            bot, fixup, text, images, allow_search=allow_search
+        )
+        reply = (resp.choices[0].message.content or "").strip()
+        if reply and not _looks_rejected(reply):
+            return resp
+        logger.warning("[ai_chat] 纠偏重试仍异常，改用兜底话术")
+        return None
 
     logger.warning(f"[ai_chat] 回复疑似风控文案，原样重试一次: {reply[:80]!r}")
     resp = await _complete_with_images(

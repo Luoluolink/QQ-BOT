@@ -152,9 +152,9 @@ async def handle_proactive(bot: Bot, event: GroupMessageEvent) -> None:
     ]
 
     try:
-        from openai import AsyncOpenAI
+        from .ai_client import make_client
 
-        client = AsyncOpenAI(api_key=cfg.ai_api_key, base_url=cfg.ai_api_base)
+        client = make_client(cfg.ai_api_key, cfg.ai_api_base, cfg.ai_proxy)
         kwargs: dict = {
             "model": cfg.ai_model,
             "messages": messages,

@@ -9,7 +9,7 @@
      机器人名字 / 机器人人设
   4. 点「保存并启动」→ 写 .env → 准备 NapCat → 拉起两个服务 → 跳转扫码页
 
-用法：双击「启动.bat」（推荐），或在本目录执行 python launcher.py。
+用法：双击「start.bat」（推荐），或在本目录执行 python launcher.py。
       依赖装好后默认弹出内嵌桌面窗口（配置页 + 扫码 + 运行日志都在窗口里），
       不再走浏览器；想改回浏览器模式加 --no-app。
 
@@ -409,7 +409,7 @@ def check_python() -> None:
             die(f"系统 Python 不可用或版本低于 3.10：{exc!r}")
         return
 
-    # 版本门槛和 README、启动.bat 里写的那句必须一致 ——
+    # 版本门槛和 README、start.bat 里写的那句必须一致 ——
     # 三处说法不一样的话，用户会先按 README 装 3.9，再被这里拦下来。
     if sys.version_info < (3, 10):
         die(
@@ -445,14 +445,14 @@ def venv_python() -> Path:
 
 SHORTCUT_NAME = "启动机器人.lnk"
 ICON_NAME = "launcher.ico"
-BAT_NAME = "启动.bat"
+BAT_NAME = "start.bat"
 
 
 def _make_shortcut_once() -> None:
     """实际执行快捷方式创建。任何失败都静默 —— 这是个装饰性功能。
 
     目标优先用 venv 的 pythonw（双击直接弹桌面窗口，全程没有黑框）；
-    venv 还没建（第一次用）才指向 启动.bat 弹终端装环境。
+    venv 还没建（第一次用）才指向 start.bat 弹终端装环境。
     """
     ico = ROOT / ICON_NAME
     bat = ROOT / BAT_NAME
@@ -573,7 +573,7 @@ def ensure_deps(py: Path) -> None:
         return
 
     want = requirements_hash()
-    if DEPS_MARKER.exists() and DEPS_MARKER.read_text().strip() == want:
+    if DEPS_MARKER.exists() and DEPS_MARKER.read_text(encoding="utf-8").strip() == want:
         ok("依赖已是最新（跳过安装）")
         return
 
@@ -595,7 +595,7 @@ def ensure_deps(py: Path) -> None:
                 last_error = "安装超时"
                 continue
         if proc.returncode == 0:
-            DEPS_MARKER.write_text(want)
+            DEPS_MARKER.write_text(want, encoding="utf-8")
             ok("依赖安装完成")
             return
         last_error = (proc.stderr or proc.stdout or "").strip()[-800:]

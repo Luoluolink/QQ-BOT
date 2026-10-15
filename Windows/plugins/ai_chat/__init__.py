@@ -1,11 +1,11 @@
-"""AI 群聊助手：在群里 @ 机器人即可对话，支持检索群资源（群文件 + 群相册 + 群精华）与识图。
+"""AI 群聊助手：以吉普莉尔的人设聊天，检索群资源（群文件 + 群相册 + 群精华），并支持识图。
 
 设计要点：
 - 分群独立上下文，群与群之间互不串台
 - 上下文按轮数自动截断，避免输入 token 无限膨胀
 - 群资源检索走「本地索引 + 关键词匹配」，模型只负责组织语言，杜绝编造文件名
 - 群精华消息同理：先抓下来本地匹配，再说清是哪位群友说的
-- 人设只影响语气，事实准确性由系统提示词里的「铁律」兜底
+- 人设（吉普莉尔）只影响语气，事实准确性由系统提示词里的「铁律」兜底
 - 图片走多模态 content 数组；只发图不打字也能识别
 - 联网搜索是可选能力，账号没开通插件时自动降级为普通对话，不会让机器人挂掉
 - 联网搜索带每日额度闸门（默认全局 30 次），按官方返回的真实计费次数扣减，
@@ -44,6 +44,7 @@ from nonebot.plugin import PluginMetadata
 from nonebot.rule import Rule, to_me
 from openai import AsyncOpenAI
 
+from .ai_client import make_client
 from . import (
     admin,
     album,
@@ -64,7 +65,6 @@ from . import (
     proactive,
     resource_index,
     stickers,
-    tools,
     vision,
     websearch,
     welcome,
@@ -72,19 +72,27 @@ from . import (
 from .config import Config
 
 __plugin_meta__ = PluginMetadata(
-    name="AI 群聊助手",
+    name="AI 群聊助手（吉普莉尔）",
     description=(
-        "在 QQ 群里 @ 机器人即可聊天，人设与模型都可在启动器的网页里配置；"
-        "支持检索群文件、群相册与群精华消息（回答「群里有没有 XX」），"
+        "在 QQ 群里 @ 机器人即可聊天，人设为《游戏人生》的吉普莉尔；"
+        "支持检索群文件、群相册、群精华与群历史消息（回答「群里有没有 XX」），"
         "支持识别群友发来的图片（需模型本身是多模态的），"
-        "支持识别被 @ 或被提到的群成员，"
+        "支持识别被 @ 或被提到的群成员，每个人的发言在记忆里单独归档、互不串台，"
         "可选联网搜索获取实时信息（带每日额度限制），"
-        "支持点歌分享（网易云音乐卡片），"
+        "支持网页爬虫（发链接总结正文、搜B站、搜GitHub）、"
+        "点歌分享（网易云音乐卡片）、存图进群相册，"
+        "支持语音转文字、图片 OCR、合并转发收发、戳一戳、表情回应、"
+        "群签到、群荣誉查询、QQ AI 语音，私聊也能对话；"
+        "管理命令（踢人/禁言/撤回/设精华/头衔等）已就绪，授予机器人管理员后即可生效；"
         "新成员入群时自动欢迎。"
     ),
     usage=(
         "@机器人 你的问题\n"
         "@机器人 + 图片 —— 识图（需模型支持多模态）\n"
+        "@机器人 存相册 + 图片 —— 把图存进群相册\n"
+        "@机器人 来首晴天 / 点歌 歌名 —— 分享音乐卡片到群里\n"
+        "直接发一个链接 —— 机器人抓网页正文帮你总结\n"
+        "@机器人 去b站找xx视频 / 去github找xx项目 —— 真实搜索后给链接\n"
         "@机器人 @某群友 问关于他的问题 —— 会知道说的是谁\n"
         "/files 关键词 —— 直接检索群资源，不走模型，秒回\n"
         "/files list —— 列出所有目录与相册\n"
@@ -93,26 +101,24 @@ __plugin_meta__ = PluginMetadata(
         "/essence —— 列出本群精华消息\n"
         "/essence 关键词 —— 在精华消息里检索\n"
         "/essence refresh —— 重建精华索引（限群主与管理员）\n"
+        "/history 关键词 —— 检索最近的群聊记录\n"
+        "/history refresh —— 重建历史消息索引\n"
         "/成员 关键词 —— 按名字或 QQ 号查群成员\n"
         "/成员 refresh —— 重建成员名单（限群主与管理员）\n"
+        "/转文字 —— 回复语音消息，识别语音内容\n"
+        "/ocr —— 回复图片，提取图中的文字\n"
+        "/戳 @某人 —— 戳一戳（被戳会回戳）\n"
+        "/回应 👍 —— 回复某条消息贴表情回应\n"
+        "/签到 —— 群签到打卡\n"
+        "/荣誉 —— 查看龙王等群荣誉榜\n"
+        "/语音 文本 —— 用 QQ AI 语音说话；/语音列表 查看音色\n"
+        "/转发 内容1||内容2 —— 发合并转发；/解析 —— 展开合并转发\n"
+        "/踢 /禁言 /解禁 /全体禁言 /撤回 /设精华 /取消精华 /头衔 /名片 /管理员 —— 管理命令（需机器人管理员身份）\n"
         "/search —— 查看今日联网额度用量\n"
         "/search reset —— 重置今日联网额度（限群主与管理员）\n"
-        "@机器人 来首晴天 / 点歌 歌名 —— 分享音乐卡片到群里\n"
-        "/history 关键词 —— 检索最近谁说过什么\n"
-        "/history recent —— 看最近 10 条消息\n"
-        "/转文字 —— 回复语音消息，识别语音内容（QQ 官方能力，免费）\n"
-        "/ocr —— 回复图片，提取图中文字\n"
-        "/戳 @某人 —— 戳一下（被戳会回戳）\n"
-        "/回应 👍 —— 给被回复的消息加表情回应\n"
-        "/签到 —— 领取今天的群签到\n"
-        "/荣誉 —— 查看群荣誉榜（龙王等）\n"
-        "/语音 文本 —— 用群 AI 音色把文本念出来\n"
-        "/语音列表 —— 查看可用的 AI 音色\n"
-        "/转发 内容1||内容2 —— 打包成合并转发消息\n"
-        "/解析 —— 回复合并转发消息，展开楼层\n"
         "/欢迎 —— 查看入群欢迎的开关与用量\n"
         "/reset —— 清空本群上下文（限群主与管理员）\n"
-        "私聊直接发消息也能聊（可在配置里关闭）"
+        "私聊直接发消息也能聊"
     ),
     type="application",
     config=Config,
@@ -136,19 +142,40 @@ _PERSONA_PATH = (
 )
 
 
-def _persona_override(group_id: int) -> str:
-    """读本群的人设覆盖；没设置过返回空串。"""
+def _assistant_iron_rules() -> str:
+    """从默认人设里抽出「铁律」段落（防止编造文件名等约束）。
+
+    管理员换人设只换性格，铁律必须保留——群助手功能大于角色扮演，
+    换成人设后机器人照样不能编造文件名、不能混淆发言人。
+    抽取方式是按「【铁律」分段，跟着默认人设走，改默认提示词不用改这里。
+    """
+    if "【铁律" not in cfg.ai_system_prompt:
+        return ""
+    return "\n\n【铁律 —— 优先级高于上面所有性格设定】" + cfg.ai_system_prompt.split(
+        "【铁律", 1
+    )[1]
+
+
+def _persona_for(group_id: int) -> str:
+    """本群实际生效的人设：管理员设置过覆盖就用「覆盖 + 铁律」，否则用默认。"""
     try:
         data = json.loads(_PERSONA_PATH.read_text(encoding="utf-8"))
-        return ((data.get("groups") or {}).get(str(group_id)) or "").strip()
+        override = ((data.get("groups") or {}).get(str(group_id)) or "").strip()
     except (OSError, ValueError):
-        return ""
+        override = ""
+    if not override:
+        return cfg.ai_system_prompt
+    return override + _assistant_iron_rules()
 
 
 def _persona_source(group_id: int) -> tuple[str, int]:
     """人设来源描述（给 /人设 看的）：(来源, 自定义文本长度)。"""
-    override = _persona_override(group_id)
-    return ("本群自定义" if override else "默认（.env / 网页配置）"), len(override)
+    try:
+        data = json.loads(_PERSONA_PATH.read_text(encoding="utf-8"))
+        override = ((data.get("groups") or {}).get(str(group_id)) or "").strip()
+    except (OSError, ValueError):
+        override = ""
+    return ("本群自定义" if override else "默认（吉普莉尔）"), len(override)
 
 
 def _set_persona(group_id: int, text: str) -> None:
@@ -170,29 +197,6 @@ def _set_persona(group_id: int, text: str) -> None:
     )
 
 
-def _effective_system_prompt(group_id: int) -> str:
-    """本群实际生效的系统提示词。
-
-    没有覆盖时直接用 _system_prompt()；有覆盖时替换「人设段」——
-    日期和机器人名字保留，IRON_RULES 由代码重新无条件附加。
-    群助手功能大于角色扮演：换什么人设都不能破坏防幻觉底线。
-    """
-    override = _persona_override(group_id)
-    if not override:
-        return _system_prompt()
-    today = date.today()
-    weekday = "一二三四五六日"[today.weekday()]
-    parts = [
-        f"今天的日期是 {today.isoformat()}（星期{weekday}）。涉及时间的问题一律以此为准。"
-    ]
-    name = (cfg.ai_bot_name or "").strip()
-    if name:
-        parts.append(f"你的名字是「{name}」。")
-    parts.append(override)
-    parts.append(IRON_RULES)
-    return "\n\n".join(parts)
-
-
 def _is_bot_admin(bot: Bot, event: GroupMessageEvent) -> bool:
     """群主 / 群管理员 / 超级用户（.env 里 SUPERUSERS）都有机器人控制权。"""
     if event.sender.role in ("owner", "admin"):
@@ -211,6 +215,9 @@ RESOURCE_KEYWORDS = (
     "压缩包", "课件", "ppt", "讲义",
     "有没有", "有没有人", "找一下", "找找", "搜一下", "搜搜",
     "在哪", "在哪个", "哪个文件夹", "共享",
+    # 实测教训：问「虚拟机」时触发词全没命中，检索层整个被跳过，
+    # 模型顺着聊天历史编了个不存在的安装包。补上常见的资源类名词。
+    "安装包", "补丁", "驱动", "电子书", "种子", "网盘", "资源",
 )
 
 _client: AsyncOpenAI | None = None
@@ -222,7 +229,7 @@ def get_client() -> AsyncOpenAI:
     if _client is None:
         if not cfg.ai_api_key:
             raise RuntimeError("未配置 AI_API_KEY，请检查 .env 文件")
-        _client = AsyncOpenAI(api_key=cfg.ai_api_key, base_url=cfg.ai_api_base)
+        _client = make_client(cfg.ai_api_key, cfg.ai_api_base, cfg.ai_proxy)
     return _client
 
 
@@ -234,71 +241,6 @@ def _roll_day_if_needed() -> None:
         _usage.clear()
         _private_usage.clear()
         _usage_day = today
-
-
-# ---------------------------------------------------------------- 铁律
-#
-# 这段**不属于人设**，而是代码强制的约束：无论人设怎么写、从哪来
-# （启动器网页 / .env / config.py），它都会被拼在 system 提示词的最后。
-#
-# 为什么要这样拆：人设是用户随便改的东西，而这几条是功能可靠性的底线。
-# 早先把它们写在默认人设正文里，结果只要用户在网页上填了自己的性格，
-# 整段约束就被一起覆盖掉了 —— 机器人开始在群里报不存在的文件名。
-# 放在代码里就没有这个缺口了。
-IRON_RULES = (
-    "【铁律 —— 优先级高于上面所有性格设定】\n"
-    "1. 当系统给出「群资源检索结果」时，你必须严格依据那份列表回答，明确告诉对方"
-    "东西在哪个文件夹或哪个相册。列表里没有的，一律回答没有。"
-    "绝对禁止编造不存在的文件名、相册名或链接。\n"
-    "2. 当系统给出「群精华消息检索结果」时，同样只能依据那份列表回答，"
-    "并说清是哪位群友说的。列表里没有的就说没有，不要凭印象补充。\n"
-    "3. 当对方发来图片时，只描述你真正看到的内容。看不清、看不出就说看不出来，"
-    "不要猜测图里有什么，也不要假装看到了文字或细节。\n"
-    "4. 当系统给出「群成员识别结果」时，说明对方说的就是群里那些人。"
-    "涉及他们的群身份、昵称、头衔时只能依据那份资料，不要编造。"
-    "至于他们说过什么、做过什么、和谁关系好，资料里没有的就说不知道。\n"
-    "5. 人设只影响语气，不影响事实。哪怕语气再随意，说出来的文件名、位置、"
-    "谁说过什么，都必须准确。\n"
-    "6. 不使用 Markdown 语法，不输出列表符号、标题或代码块，因为 QQ 不渲染这些格式。\n"
-    "7. 遇到违法、有害或明显违规的请求，直接拒绝，不要用人设去包装。\n"
-    "8. 发言人归档：每条用户消息开头的【】里是这条消息发言人（群成员）的名字，"
-    "历史记录里的用户消息也带同样的标记。每个人的话只能记在 TA 自己名下——"
-    "当有人问「我喜欢什么」「我说过什么」「我之前提过吗」这类问题，"
-    "只能翻历史里【这个人自己】名下的发言来回答；TA 没说过的就直说不知道，"
-    "绝不能把别人说过的话当成 TA 说的，也不能把 TA 说过的话安到别人头上。"
-    "对方提到「他/她」时，优先结合最近几条发言的发言人判断指的是谁，拿不准就问。"
-    "注意：【】标记只是给你看的备注格式，不是对话格式——"
-    "你自己的回复里绝对不要出现【】开头的名字前缀（包括你自己的名字），直接说话就行。\n"
-    "9. 当系统给出「群文件内容检索结果」时，那是从群文件正文里摘出来的原文，"
-    "只能依据摘录回答并说清出自哪个文件；摘录里没有的信息就直说文件里没写到，"
-    "绝不能脑补文件内容，也不能把别的文件的内容安到这个文件头上。"
-)
-
-
-def _system_prompt() -> str:
-    """拼出系统提示词：日期 + 机器人名字 + 人设 + 铁律。
-
-    日期是必须喂的 —— 不喂的话模型不知道「今天」是哪天，问天气会算错日期，
-    联网时尤其明显。
-
-    名字单独拼进来（而不是写死在 config.py 的人设正文里），是为了让启动器网页里
-    填的「机器人名字」能生效，同时不干扰用户自己改人设。
-
-    铁律固定拼在最后，且由本函数无条件附加 —— 见上面 IRON_RULES 的说明。
-    """
-    today = date.today()
-    weekday = "一二三四五六日"[today.weekday()]
-    parts = [
-        f"今天的日期是 {today.isoformat()}（星期{weekday}）。涉及时间的问题一律以此为准。"
-    ]
-    name = (cfg.ai_bot_name or "").strip()
-    if name:
-        parts.append(f"你的名字是「{name}」。")
-    persona = (cfg.ai_system_prompt or "").strip()
-    if persona:
-        parts.append(persona)
-    parts.append(IRON_RULES)
-    return "\n\n".join(parts)
 
 
 def _looks_like_resource_query(text: str) -> bool:
@@ -575,7 +517,6 @@ def _web_search_unavailable(exc: Exception) -> bool:
             "tool_choice",
             "tool choice",
             "tools",
-            "tool ",
             "invalid tool",
             "unknown tool",
             "unsupported tool",
@@ -657,7 +598,7 @@ async def _create_completion(messages: list[dict], allow_search: bool = False):
             "去 MiMo 控制台 → 插件管理 开通后即可生效；"
             "② 换成了本地模型（Ollama / llama.cpp），它不认识厂商私有的 "
             "web_search 工具——这种情况把 .env 里的 AI_WEB_SEARCH_ENABLED "
-            "改成 false 就不会再报这个告警了。"
+            "改成 false 就不会再报这个告警。"
         )
         kwargs.pop("tools", None)
         kwargs.pop("tool_choice", None)
@@ -736,6 +677,21 @@ def _looks_rejected(reply: str) -> bool:
     return 0 < len(reply) < 120 and bool(_RISK_REJECT_PAT.search(reply))
 
 
+# 模型幻觉：冒充系统输出「审核通知」之类的罐头文本
+# （实测 mimo 对「Step-5-Preview 是谁家的模型」这类问题吐出过
+#   「【系统提示：本条消息为系统自动内容审核通知，非群成员发言，无需归档…】」）。
+# 特征组合要具体：单有「系统提示」会误杀正常讲电脑操作的长回复。
+_FAKE_NOTICE_RE = re.compile(r"【?\s*系统提示[^】]{0,80}】?", re.IGNORECASE)
+_FAKE_NOTICE_HINTS = ("审核", "归档", "非群成员", "自动内容")
+
+
+def _looks_fake_notice(reply: str) -> bool:
+    """识别模型冒充系统发出的假「内容审核通知」。"""
+    return len(reply) < 200 and bool(_FAKE_NOTICE_RE.search(reply)) and any(
+        h in reply for h in _FAKE_NOTICE_HINTS
+    )
+
+
 async def _complete_with_reject_retry(
     bot: Bot,
     messages: list[dict],
@@ -756,7 +712,25 @@ async def _complete_with_reject_retry(
     )
     reply = (resp.choices[0].message.content or "").strip()
     if not _looks_rejected(reply):
-        return resp
+        if not _looks_fake_notice(reply):
+            return resp
+        # 假系统通知：带着纠偏提示重试一次，重试结果不再二次校验
+        logger.warning(f"[ai_chat] 回复疑似模型幻觉的系统通知，纠偏重试: {reply[:80]!r}")
+        fixup = messages + [
+            {
+                "role": "user",
+                "content": "（刚才你的回复输出了一段不存在的系统审核通知，这是错误的。"
+                "请直接正常回答上一个问题，绝不要输出任何「系统提示/内容审核通知」样式的文字。）",
+            }
+        ]
+        resp = await _complete_with_images(
+            bot, fixup, text, images, allow_search=allow_search
+        )
+        reply = (resp.choices[0].message.content or "").strip()
+        if reply and not _looks_rejected(reply):
+            return resp
+        logger.warning("[ai_chat] 纠偏重试仍异常，改用兜底话术")
+        return None
 
     logger.warning(f"[ai_chat] 回复疑似风控文案，原样重试一次: {reply[:80]!r}")
     resp = await _complete_with_images(
@@ -870,10 +844,16 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
     _last_call[group_id] = now
     _usage[group_id] += 1
 
-    # 日期、机器人名字、人设一起拼成 system 提示词（见 _system_prompt）；
-    # 管理员设过人设覆盖的群会替换人设段（见 _effective_system_prompt）
+    # 把当天日期喂给模型。不喂的话它根本不知道「今天」是哪天 ——
+    # 联网时尤其明显：问「今天天气」，它会把日期算错一天。
+    today = date.today()
+    weekday = "一二三四五六日"[today.weekday()]
     messages: list[dict] = [
-        {"role": "system", "content": _effective_system_prompt(group_id)}
+        {
+            "role": "system",
+            "content": f"今天的日期是 {today.isoformat()}（星期{weekday}）。"
+            "涉及时间的问题一律以此为准。\n\n" + _persona_for(group_id),
+        }
     ]
 
     context = await _build_context(bot, group_id, text, at_qqs, event.self_id)
@@ -937,6 +917,9 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
             f"reasoning_effort={cfg.ai_reasoning_effort!r}, usage={resp.usage}"
         )
         await chat.finish("模型光顾着思考没写出正文，把 AI_MAX_TOKENS 调大一点试试")
+
+    # 记录回复内容（截断）：排查「机器人到底回了什么」全靠它
+    logger.info(f"[ai_chat] 回复({len(reply)}字): {reply[:200]}")
 
     # 历史里只留文字：把带图片的 content 数组存进历史的话，
     # 之后每一轮都会把图片重新发一遍，token 和延迟都会炸。
@@ -1458,12 +1441,12 @@ async def handle_persona(
 
     if not text:
         src, length = _persona_source(event.group_id)
-        current = _effective_system_prompt(event.group_id)
+        current = _persona_for(event.group_id)
         preview = current[:100] + ("…" if len(current) > 100 else "")
         await persona_cmd.finish(
             f"当前人设：{src}" + (f"（{length} 字）" if length else "") + f"\n开头是：{preview}\n"
             "管理员可发 /人设 新人设文本 换人设；/人设 恢复 回默认。"
-            "注意：换人设只换性格，资源检索铁律会自动保留。"
+            "注意：换人设只换性格，资源检索的铁律会自动保留。"
         )
 
     if not cfg.ai_persona_override_enabled:
@@ -1473,7 +1456,7 @@ async def handle_persona(
 
     if text in ("恢复", "重置", "默认", "还原"):
         _set_persona(event.group_id, "")
-        await persona_cmd.finish("已恢复默认人设")
+        await persona_cmd.finish("已恢复默认人设（吉普莉尔）")
 
     if len(text) < cfg.ai_persona_min_len:
         await persona_cmd.finish(
@@ -1500,7 +1483,7 @@ async def _intent_set_persona(bot: Bot, event: GroupMessageEvent, args: dict, is
         return "人设覆盖功能当前是关闭的（AI_PERSONA_OVERRIDE_ENABLED=false）"
     if text in ("恢复", "重置", "默认", "还原"):
         _set_persona(event.group_id, "")
-        return "已恢复默认人设"
+        return "已恢复默认人设（吉普莉尔）"
     if len(text) < cfg.ai_persona_min_len:
         return (
             f"新人设太短了，至少 {cfg.ai_persona_min_len} 字——"
@@ -1517,7 +1500,7 @@ async def _intent_set_persona(bot: Bot, event: GroupMessageEvent, args: dict, is
 
 async def _intent_persona_status(bot: Bot, event: GroupMessageEvent, args: dict, is_admin: bool) -> str:
     src, length = _persona_source(event.group_id)
-    current = _effective_system_prompt(event.group_id)
+    current = _persona_for(event.group_id)
     preview = current[:100] + ("…" if len(current) > 100 else "")
     return (
         f"当前人设：{src}" + (f"（{length} 字）" if length else "") + f"\n开头是：{preview}\n"
@@ -1542,7 +1525,7 @@ notice = on_notice(priority=50, block=False)
 
 @notice.handle()
 async def handle_group_increase(bot: Bot, event: GroupIncreaseNoticeEvent) -> None:
-    """有人入群时，按当前人设欢迎一句。
+    """有人入群时，用吉普莉尔的口吻欢迎一句。
 
     和聊天最大的区别：这是**主动发消息**。聊天只在被 @ 时才说话，
     这里却是机器人自己开口 —— 而「短时间连发多条消息」正是 QQ 风控最敏感的行为。
@@ -1574,10 +1557,14 @@ async def handle_group_increase(bot: Bot, event: GroupIncreaseNoticeEvent) -> No
     members.invalidate(group_id)
     name = await members.fetch_member_name(bot, group_id, user_id)
 
+    today = date.today()
+    weekday = "一二三四五六日"[today.weekday()]
+    date_line = f"今天的日期是 {today.isoformat()}（星期{weekday}）。"
+
     reply = ""
     try:
         resp = await _create_completion(
-            welcome.build_messages(_system_prompt(), name, user_id),
+            welcome.build_messages(date_line, cfg.ai_system_prompt, name, user_id),
             allow_search=False,
         )
         reply = (resp.choices[0].message.content or "").strip()
@@ -1627,17 +1614,12 @@ _private_history: DefaultDict[int, Deque[dict]] = defaultdict(
 _private_last: Dict[int, float] = {}
 _private_usage: DefaultDict[int, int] = defaultdict(int)
 
-def _private_chat_rule(bot: Bot, event: Event) -> bool:
-    """@ 机器人在任意位置都算（适配器只认开头/结尾，图片打头时 @ 在中间会漏）。"""
-    return tools.at_me(event, bot.self_id)
-
-
-private_chat = on_message(rule=Rule(_private_chat_rule), priority=50, block=False)
+private_chat = on_message(rule=to_me(), priority=50, block=False)
 
 
 @private_chat.handle()
 async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
-    """私聊也走 AI 对话。
+    """私聊也走吉普莉尔对话。
 
     和群聊的差异：没有群资源/精华/成员检索（那些上下文在私聊里无意义），
     识图和联网照常可用；限流按「每个人」而不是按群。
@@ -1656,6 +1638,7 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
         await private_chat.finish("今天的对话额度已经用完啦，明天再来找我～")
 
     message = event.get_message()
+    at_qqs = []  # 私聊里 @ 没有意义
     text = members.render_text(message, {}, event.self_id)
 
     images = (
@@ -1669,7 +1652,15 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
     _private_last[user_id] = now
     _private_usage[user_id] += 1
 
-    messages: list[dict] = [{"role": "system", "content": _system_prompt()}]
+    today = date.today()
+    weekday = "一二三四五六日"[today.weekday()]
+    messages: list[dict] = [
+        {
+            "role": "system",
+            "content": f"今天的日期是 {today.isoformat()}（星期{weekday}）。"
+            "涉及时间的问题一律以此为准。\n\n" + cfg.ai_system_prompt,
+        }
+    ]
     messages.extend(_private_history[user_id])
 
     user_content = await vision.build_content(
@@ -1709,20 +1700,10 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
     segments: list = []
     if cfg.ai_reply_quote:
         segments.append(MessageSegment.reply(event.message_id))
-    # 链接转卡片：回复里的 B 站/网页链接自动变成分享卡片，失败退回纯文本
-    segments.extend(await crawler.linkify(reply, proxy=cfg.ai_crawler_youtube_proxy))
+    segments.append(MessageSegment.text(reply))
 
     sticker = _maybe_sticker(text)
     if sticker is not None:
         segments.append(MessageSegment.image(sticker.as_uri()))
 
-    try:
-        await bot.send(event, Message(segments))
-        return
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(f"[ai_chat] 带卡片发送失败，退回纯文本: {exc!r}")
-
-    fallback: list = [MessageSegment.text(reply)]
-    if cfg.ai_reply_quote:
-        fallback.insert(0, MessageSegment.reply(event.message_id))
-    await private_chat.finish(Message(fallback))
+    await private_chat.finish(Message(segments))

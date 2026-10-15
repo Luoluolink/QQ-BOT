@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any
 
 from nonebot import get_plugin_config, logger, on_command
-from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message
+from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message
 from nonebot.params import CommandArg
 from nonebot.rule import to_me
 
@@ -619,6 +619,131 @@ async def _sheet_append_entry(gid: int, title: str, url: str, info: dict[str, An
     await _sheet_write(book_id, sid, target, [entry])
     logger.info(f"[ai_chat] 表格收录: {name[:30]} -> 工作表「{sheet.get('title')}」第 {target} 行")
     return f"ok:第{target}行"
+
+
+# ---- 读文档/表格（供意图路由 read_doc 动作使用）----
+
+_READ_MAX_ROWS = 500      # 表格最多往下读多少行，防止超大表拖爆
+_READ_LINE_CLIP = 60      # 汇报里每行最多显示多少字
+
+
+def _clip(s: str, n: int = _READ_LINE_CLIP) -> str:
+    s = re.sub(r"\s+", " ", str(s or "")).strip()
+    return s[:n] + "…" if len(s) > n else s
+
+
+def _pick_rows(
+    rows: list[list[str]], keyword: str, limit: int
+) -> tuple[int, list[str], list[list[str]]]:
+    """从表格里挑要汇报的行：(数据总条数, 表头行, 挑出的数据行)。
+
+    第一行当表头；keyword 非空 → 数据行里过滤包含关键词的行
+    （不区分大小写，任意单元格命中即可）；否则取最后 limit 行（最新的在底部）。"""
+    nonempty = [r for r in rows if any(str(c).strip() for c in r)]
+    if not nonempty:
+        return 0, [], []
+    header = [str(c).strip() for c in nonempty[0]]
+    data = nonempty[1:]
+    kw = keyword.strip().lower()
+    hit = [r for r in data if any(kw in str(c).lower() for c in r)] if kw else data
+    return len(data), header, hit[-limit:]
+
+
+def _rows_report(
+    header: list[str], entries: list[list[str]], total: int, keyword: str, url: str
+) -> str:
+    """把挑出的数据行拼成人话汇报（表头行当列名用）。"""
+    if not entries:
+        return f"表格里还没有收录任何内容：{url}"
+    lines = []
+    for i, r in enumerate(entries, 1):
+        # 有表头 → 「列名: 值」拼一起；没有 → 直接拼值
+        if header and len(header) == len(r):
+            cells = [
+                f"{header[j]}:{_clip(r[j], 40)}"
+                for j in range(len(r))
+                if str(r[j]).strip()
+            ]
+        else:
+            cells = [_clip(c, 40) for c in r if str(c).strip()]
+        if not cells:
+            continue
+        lines.append(f"{i}. " + "｜".join(cells))
+    if not lines:
+        return f"表格里还没有收录任何内容：{url}"
+    if keyword.strip():
+        head = f"找到这些和「{keyword}」相关的"
+        tail = f"共 {total} 条，展示 {len(lines)} 条"
+    else:
+        head = f"最近收录的 {len(lines)} 条"
+        tail = f"共 {total} 条"
+    return f"{head}：\n" + "\n".join(lines) + f"\n({tail})\n完整表格: {url}"
+
+
+async def _sheet_report(info: dict[str, Any], keyword: str, limit: int) -> str:
+    book_id = str(info.get("book_id") or "")
+    if not book_id:
+        book_id = await _to_book_id(info["file_id"])
+        info["book_id"] = book_id
+        _save_bindings()
+    sheets = await _sheet_list(book_id)
+    sheet = next((s for s in sheets if s.get("isVisible")), sheets[0] if sheets else None)
+    if not sheet:
+        return "表格里没有可见的工作表"
+    sid = str(sheet["sheetID"])
+    rc = min(int(sheet.get("rowCount") or 0), _READ_MAX_ROWS)
+    cc = int(sheet.get("columnCount") or 0)
+    n_cols = max(cc, len(_SHEET_DEFAULT_HEADER))
+    rows = await _sheet_read(book_id, sid, rc, n_cols) if rc else []
+    total, header, picked = _pick_rows(rows, keyword, limit)
+    if total == 0:
+        return f"表格里还没有收录任何内容：{info.get('url', '')}"
+    if not picked:
+        return f"表格里共 {total} 条，但没有和「{keyword}」相关的"
+    return _rows_report(header, picked, total, keyword, info.get("url", ""))
+
+
+async def _doc_report(info: dict[str, Any], keyword: str, limit: int) -> str:
+    text, _, _ = await read_doc(info["file_id"])
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return f"文档还是空的：{info.get('url', '')}"
+    kw = keyword.strip().lower()
+    if kw:
+        hits = [ln for ln in lines if kw in ln.lower()]
+        if not hits:
+            return f"文档里没有提到「{keyword}」"
+        shown = hits[-limit:]
+        body = "\n".join(f"{i}. {_clip(ln)}" for i, ln in enumerate(shown, 1))
+        return (
+            f"文档里和「{keyword}」相关的有 {len(hits)} 处"
+            f"（展示最近 {len(shown)} 处）：\n{body}\n完整文档: {info.get('url', '')}"
+        )
+    shown = lines[-limit:]
+    body = "\n".join(f"{i}. {_clip(ln)}" for i, ln in enumerate(shown, 1))
+    return (
+        f"文档末尾的内容（共 {len(lines)} 行，展示最后 {len(shown)} 行）：\n{body}\n"
+        f"完整文档: {info.get('url', '')}"
+    )
+
+
+async def read_bound_text(gid: int, keyword: str = "", limit: int = 8) -> str:
+    """读本群绑定的在线文档/表格，返回人话汇报（给意图路由 read_doc 用）。"""
+    info = binding(gid)
+    if not info:
+        return "本群还没绑定在线文档：先对我说「绑定文档」或「创建文档」"
+    kind = info.get("kind") or parse_kind(info.get("url") or "") or "doc"
+    try:
+        if kind == "sheet":
+            return await _sheet_report(info, keyword, limit)
+        return await _doc_report(info, keyword, limit)
+    except DocsNotConfigured:
+        return "腾讯文档 API 还没配置好（.env 需要 AI_DOCS 三项凭证）"
+    except DocsAuthError as exc:
+        return f"凭证失效了，需要重新生成 access_token 填进 .env（{exc}）"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[ai_chat] 读绑定文档失败: {exc!r}")
+        return f"读的时候出了点问题：{exc}\n如果是权限问题，确认我的授权账号还是文档协作者"
 
 
 # ---- 条目格式 ----
