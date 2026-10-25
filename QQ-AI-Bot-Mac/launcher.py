@@ -2243,6 +2243,11 @@ class WebHandler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         form = self._read_json()
 
+        if path == "/api/qr/refresh":
+            # 页面的「刷新二维码」按钮发的是 POST（GET 也有同款路由兜底）
+            self._json(qr_refresh())
+            return
+
         if path == "/api/services/restart":
             self._json(services_control("restart"))
             return
