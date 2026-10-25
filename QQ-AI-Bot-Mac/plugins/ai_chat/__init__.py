@@ -40,9 +40,13 @@ from nonebot.adapters.onebot.v11 import (
     MessageSegment,
     PrivateMessageEvent,
 )
+from nonebot.exception import IgnoredException
+from nonebot.matcher import Matcher
+from nonebot.message import run_preprocessor
 from nonebot.params import CommandArg
 from nonebot.plugin import PluginMetadata
-from nonebot.rule import Rule, to_me
+from nonebot.rule import CommandRule, Rule, to_me
+from nonebot.typing import T_State
 from openai import AsyncOpenAI
 
 from .ai_client import chat_kwargs, make_client
@@ -132,6 +136,31 @@ __plugin_meta__ = PluginMetadata(
 )
 
 cfg = get_plugin_config(Config)
+
+# ---------- 斜杠命令总闸 ----------
+# 插件里所有 on_command 注册的命令（/files /doc /踢 /禁言 /收录 /人设……）
+# 统一在这一处放行，默认全关：谁都不能用命令操作机器人，
+# 群里只保留 @ 它聊天这类自然语言功能。
+# 真要留给自己用：.env 里 AI_COMMANDS_ENABLED=true 并把
+# AI_COMMAND_ADMINS=["你的QQ"] 配上；名单为空等于没开。
+# 拦截是静默的——当没看见，不回复不报错，不给外人反复试探的空间。
+def _is_command_matcher(matcher: type[Matcher]) -> bool:
+    return any(
+        isinstance(getattr(c, "call", None), CommandRule)
+        for c in matcher.rule.checkers
+    )
+
+
+@run_preprocessor
+async def _gate_slash_commands(
+    matcher: Matcher, bot: Bot, event: Event, state: T_State
+) -> None:
+    if not _is_command_matcher(matcher):
+        return
+    if not cfg.ai_commands_enabled:
+        raise IgnoredException("斜杠命令功能已关闭")
+    if event.get_user_id() not in set(cfg.ai_command_admins):
+        raise IgnoredException("发送者不在命令白名单")
 
 # 每个群一个独立的历史队列
 _history: DefaultDict[int, Deque[dict]] = defaultdict(

@@ -316,6 +316,15 @@ class Config(BaseModel):
     # 自定义人设的最小长度（防止手滑把「好」存成人设）
     ai_persona_min_len: int = 20
 
+    # ---------- 斜杠命令总闸 ----------
+    # /help /files /踢 /禁言 /收录……插件里全部命令的总开关，默认关闭：
+    # 谁都不能用命令操作机器人，群里只保留自然语言聊天。
+    # 打开后也仅限 ai_command_admins 名单里的 QQ 号使用（名单空 = 等于没开）。
+    # 拦截静默进行：机器人不回复、不提示，避免被陌生人反复试探。
+    ai_commands_enabled: bool = False
+    # 例：AI_COMMAND_ADMINS=["123456","234567"]
+    ai_command_admins: list[str] = Field(default_factory=list)
+
     # ---------- 主动发言 ----------
     # 群里没 @ 机器人、但聊天内容命中关键词时，按概率插一句话。
     # 这是主动发言，和入群欢迎一样是 QQ 风控最敏感的行为，限流从严：

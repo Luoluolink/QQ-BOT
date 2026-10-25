@@ -662,6 +662,12 @@ PORT={port}
 ONEBOT_ACCESS_TOKEN={token}
 COMMAND_START=["/"]
 
+# ---------- 斜杠命令总闸 ----------
+# 默认关：谁都不能用 /命令 操作机器人，群里只保留 @ 它聊天。
+# 想给自己留命令用：改成 true，并把 AI_COMMAND_ADMINS 换成你的 QQ 号
+AI_COMMANDS_ENABLED=false
+AI_COMMAND_ADMINS=[]
+
 # ---------- 机器人身份 ----------
 # 机器人登录用的 QQ 号。这个值用于 NapCat 的快速登录，
 # 不填也不影响使用（照样可以扫码登录）。
