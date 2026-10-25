@@ -2406,11 +2406,19 @@ def main() -> int:
         return rc
 
     if not FROZEN and not args.no_app and not args.check_only:
-        pyw = py.with_name("pythonw.exe")
-        if _webview_available(py) and pyw.exists():
+        # 窗口模式的门槛按平台区分：Windows 要 pythonw.exe（无控制台弹窗），
+        # macOS 没有 pythonw——只要 venv 里 webview 可导入就直接开窗口。
+        # 旧写法无条件要求 pythonw.exists()，导致 macOS 永远退回浏览器模式。
+        if os.name == "nt":
+            pyw = py.with_name("pythonw.exe")
+            window_py = str(pyw) if pyw.exists() else None
+        else:
+            pyw = None
+            window_py = str(py)
+        if window_py and _webview_available(py):
             hint("准备打开内嵌窗口…")
             subprocess.Popen(
-                [str(pyw), str(Path(__file__).resolve()),
+                [window_py, str(Path(__file__).resolve()),
                  "--app-child", "--web-port", str(port)],
                 cwd=str(ROOT),
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,

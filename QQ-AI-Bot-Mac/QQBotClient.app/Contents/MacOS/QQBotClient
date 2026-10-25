@@ -1,0 +1,9 @@
+#!/bin/bash
+# QQ 机器人客户端：由 LaunchServices（双击 / open）拉起。
+# 不经过终端 —— pywebview 窗口所需的 GUI 会话权限由 LaunchServices 天然赋予，
+# 这也是把它做成 .app 的原因（裸 python 从守护上下文起窗口会被 macOS 拒绝）。
+# 位置约定：本 .app 必须放在项目根目录（和 launcher.py、.venv 同级）。
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+cd "$ROOT" || exit 1
+mkdir -p logs
+exec .venv/bin/python launcher.py --app-child --web-port 8900 >> logs/launcher_client.log 2>&1
