@@ -16,6 +16,10 @@ sys.path.insert(0, str(ROOT))
 import launcher  # noqa: E402
 
 ENV = launcher.ENV_FILE
+# 全新 checkout 没有 data/ 目录，备份文件写不进去会直接崩；顺手记住 .env
+# 原本是否存在——不存在时测完要删掉测试产生的 .env，不能留个空文件污染环境
+HAD_ENV = ENV.exists()
+(ROOT / "data").mkdir(exist_ok=True)
 BACKUP = ROOT / "data" / ".env.test-backup"
 
 results = []
@@ -52,6 +56,9 @@ try:
         for ln in BACKUP.read_text(encoding="utf-8").splitlines()
         if "=" in ln and not ln.startswith("#") and ln.strip()
     }
+    # 全新环境可能本来就没有 .env（AI_API_KEY 无从「保留」）；只在其原本存在时才比对
+    had_api_key = "AI_API_KEY" in before
+    api_key_val = before.get("AI_API_KEY", "").split("=", 1)[-1]
     http("POST", "/api/tdocs", {
         "AI_DOCS_CLIENT_ID": "test_client_id_0000000000000000",
         "AI_DOCS_ACCESS_TOKEN": "test_token_xxx",
@@ -61,7 +68,7 @@ try:
     env = launcher.read_env()
     check("client_id 写入", env.get("AI_DOCS_CLIENT_ID") == "test_client_id_0000000000000000")
     check("sync_mode 写入", env.get("AI_DOCS_SYNC_MODE") == "manual")
-    check("AI_API_KEY 保留", env.get("AI_API_KEY") == before.get("AI_API_KEY", "").split("=", 1)[-1])
+    check("AI_API_KEY 保留", not had_api_key or env.get("AI_API_KEY") == api_key_val, env.get("AI_API_KEY"))
     check("AI_DOCS_ENABLED 等其他键保留", env.get("AI_DOCS_ENABLED", "true") in ("true", "false"))
 
     print("3. 非法 sync_mode 归一为 whitelist")
@@ -85,7 +92,7 @@ try:
                                 "AI_DOCS_OPEN_ID": ""})
     env = launcher.read_env()
     check("凭证已清空", env.get("AI_DOCS_CLIENT_ID") == "")
-    check("其他配置仍在", env.get("AI_API_KEY") == before.get("AI_API_KEY", "").split("=", 1)[-1])
+    check("其他配置仍在", not had_api_key or env.get("AI_API_KEY") == api_key_val, env.get("AI_API_KEY"))
 
     print("6. save_docs_env 在 .env 不存在时也能建（用临时文件验证）")
     launcher.ENV_FILE = ROOT / "data" / ".env.docs-test-tmp"  # type: ignore[assignment]
@@ -95,7 +102,10 @@ try:
     launcher.ENV_FILE = ENV  # type: ignore[assignment]
 finally:
     srv.shutdown()
-    shutil.copy2(BACKUP, ENV)
+    if HAD_ENV:
+        shutil.copy2(BACKUP, ENV)
+    else:
+        ENV.unlink(missing_ok=True)
     BACKUP.unlink(missing_ok=True)
 
 bad = [r for r in results if not r[1]]

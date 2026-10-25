@@ -22,3 +22,16 @@ logs/
 # macOS
 .DS_Store
 ._*
+
+# 登录二维码（一次性）
+napcat_login_qr.png
+
+# 参考图备份（上传新图时自动生成）
+*.bak
+*.bak.png
+
+# 配置界面草稿图（最终版 bg.jpg / icon.png 已保留）
+web/bg-ai-draft*.png
+web/icon-ai-draft.png
+web/icon-rounded-preview.png
+web/Redraw_*.png

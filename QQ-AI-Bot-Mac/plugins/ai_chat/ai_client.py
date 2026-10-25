@@ -33,3 +33,41 @@ def make_client(api_key: str, base_url: str, proxy: str = "") -> AsyncOpenAI:
         timeout=httpx2.Timeout(600.0, connect=10.0),
     )
     return AsyncOpenAI(api_key=api_key, base_url=base_url, http_client=http)
+
+
+def chat_kwargs(
+    messages: list[dict],
+    cfg,
+    *,
+    max_tokens: int,
+    temperature: float = 0.7,
+    **extra,
+) -> dict:
+    """统一的 chat.completions.create 参数构造，思考控制只此一处。
+
+    cfg 只需有 ai_model / ai_disable_thinking / ai_reasoning_effort 三个字段
+    （插件 Config 实例直接传即可），此处用鸭子类型，避免循环 import。
+
+    为什么要集中：reasoning 模型（DeepSeek 等）的思考过程会吃掉 max_tokens
+    预算——曾实测 _rewrite_prompt 给 160 tokens，推理用掉大半，正式回复
+    只剩 'drooling' 一个词甚至空字符串。所以：
+    1. 所有调用点必须走这里，保证 extra_body（thinking/reasoning_effort）一致
+    2. max_tokens 由调用方显式传入，且必须容纳推理（建议 ≥400）
+
+    extra 用于透传调用方自己的参数（如 tools、timeout 由 wait_for 包）。
+    """
+    kwargs: dict = {
+        "model": cfg.ai_model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    extra_body: dict = {}
+    if cfg.ai_disable_thinking:
+        extra_body["thinking"] = {"type": "disabled"}
+    if cfg.ai_reasoning_effort:
+        extra_body["reasoning_effort"] = cfg.ai_reasoning_effort
+    if extra_body:
+        kwargs["extra_body"] = extra_body
+    kwargs.update(extra)
+    return kwargs

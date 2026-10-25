@@ -99,6 +99,17 @@ async def main() -> None:
 
     import nonebot
 
+    # 全新 checkout 没有 .env，联网开关的默认值是 False，会让第 3~6 节全部失真。
+    # 这里显式给出被测配置（进程环境变量优先级高于 .env，测试结果不再依赖外部文件）。
+    # MODE 固定 server：第 3~6 节测的就是「挂 tools 由服务端执行」的老链路，
+    # client 模式（DeepSeek Search API）不经过这些代码路径。
+    os.environ["AI_WEB_SEARCH_ENABLED"] = "true"
+    os.environ["AI_WEB_SEARCH_MODE"] = "server"
+    os.environ["AI_WEB_SEARCH_DAILY_LIMIT"] = "30"
+    os.environ["AI_WEB_SEARCH_MAX_KEYWORD"] = "2"
+    os.environ["AI_WEB_SEARCH_FORCE"] = "false"
+    os.environ["AI_WEB_SEARCH_TRIGGER"] = "auto"
+
     nonebot.init()
 
     import plugins.ai_chat as ac

@@ -146,16 +146,19 @@ async def generate_desc(image_payload: str) -> str:
             ],
         }
     ]
-    from .ai_client import make_client
+    from .ai_client import chat_kwargs, make_client
 
     client = make_client(cfg.ai_api_key, cfg.ai_api_base, cfg.ai_proxy)
     try:
         resp = await asyncio.wait_for(
             client.chat.completions.create(
-                model=cfg.ai_model,
-                messages=messages,
-                max_tokens=60,
-                extra_body={"thinking": {"type": "disabled"}} if cfg.ai_disable_thinking else None,
+                **chat_kwargs(
+                    messages,
+                    cfg,
+                    # 60 会被 reasoning 吃到空描述，给 400；输出截断在下面
+                    max_tokens=400,
+                    temperature=0.3,
+                )
             ),
             timeout=_DESCRIBE_TIMEOUT,
         )

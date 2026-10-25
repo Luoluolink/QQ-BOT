@@ -1,3 +1,7 @@
 nonebot2[fastapi]>=2.3.0
 nonebot-adapter-onebot>=2.4.0
 openai>=1.40.0
+# 联网检索（client 模式）与生图下载用 httpx2（AI_PROXY 走代理时也依赖它）
+httpx2>=2.0.0
+# 生图表情包的文字后处理（找不到字体时会自动跳过，装上才有手写体短语）
+pillow>=10.0.0

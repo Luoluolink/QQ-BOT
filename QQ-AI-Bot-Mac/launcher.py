@@ -696,6 +696,20 @@ AI_COOLDOWN=5
 AI_DAILY_LIMIT=200
 AI_GROUP_WHITELIST=[]
 AI_REPLY_QUOTE=true
+
+# ---------- AI 生图表情包（可选）----------
+# 结合群聊话题即兴画表情包，也支持 @机器人「画一张X」点名作画。
+# 接口要和对话模型分开配（OpenAI 兼容的生图接口，如 gpt-image 系列）。
+# 不填 / 保持 false 不影响其他功能。
+AI_IMAGEGEN_ENABLED=false
+AI_IMAGEGEN_API_BASE=https://api.openai.com/v1
+AI_IMAGEGEN_API_KEY=
+AI_IMAGEGEN_MODEL=gpt-image-1
+AI_IMAGEGEN_QUALITY=low
+AI_IMAGEGEN_SIZE=1024x1024
+# 即兴作画概率（命中主动搭话时按概率改走生图，0~1）
+AI_IMAGEGEN_PROBABILITY=0.08
+AI_IMAGEGEN_DAILY_LIMIT=30
 """
 
 
@@ -826,6 +840,166 @@ def save_docs_env(params: dict) -> dict:
                 out.append(f"{key}={updates[key]}")
     ENV_FILE.write_text("\n".join(out) + "\n", encoding="utf-8")
     return updates
+
+
+# ---------------------------------------------------------------- AI 生图参数
+#
+# 可选功能：结合群聊话题即兴画表情包（gpt-image 系列），也支持 @机器人
+# 「画一张X」点名作画。不填/关开关完全不影响其他功能 —— 插件里
+# _generate() 检测不到 Key 会直接跳过。
+# 参考图（角色立绘）存 assets/jibril_reference.png，由 /api/imagegen/ref
+# 上传；不传也能用（降级为纯文本描述角色，效果差一截）。
+
+IMAGEGEN_ENV_KEYS = (
+    "AI_IMAGEGEN_ENABLED",
+    "AI_IMAGEGEN_API_BASE",
+    "AI_IMAGEGEN_API_KEY",
+    "AI_IMAGEGEN_MODEL",
+    "AI_IMAGEGEN_QUALITY",
+    "AI_IMAGEGEN_PROBABILITY",
+    "AI_IMAGEGEN_DAILY_LIMIT",
+    "AI_IMAGEGEN_SIZE",
+)
+
+IMAGEGEN_QUALITIES = ("low", "medium", "high")
+IMAGEGEN_SIZES = ("1024x1024", "1024x1536", "1536x1024")
+
+# 参考图落点：与插件 imagegen._find_reference() 的默认查找路径一致
+REF_IMAGE_PATH = ROOT / "assets" / "jibril_reference.png"
+
+
+def save_imagegen_env(params: dict) -> dict:
+    """把 AI 生图参数写进 .env，只动这几个键，其余行原样保留。
+
+    空值也会写 `KEY=` 占位（清除 Key = 留空），保证「清空保存」真的清掉。
+    """
+    updates: dict[str, str] = {}
+    for key in IMAGEGEN_ENV_KEYS:
+        val = str(params.get(key) or "").strip().replace("\n", " ")
+        if key == "AI_IMAGEGEN_QUALITY" and val not in IMAGEGEN_QUALITIES:
+            val = "low"
+        if key == "AI_IMAGEGEN_SIZE" and val not in IMAGEGEN_SIZES:
+            val = "1024x1024"
+        if key == "AI_IMAGEGEN_ENABLED" and val not in ("true", "false"):
+            # 有 Key 默认开，没 Key 保持关（前端也会同步这个判断）
+            val = "true" if updates.get("AI_IMAGEGEN_API_KEY") else "false"
+        if key == "AI_IMAGEGEN_PROBABILITY":
+            try:
+                f = float(val)
+                val = str(min(max(f, 0.0), 1.0))
+            except ValueError:
+                val = "0.08"
+        if key == "AI_IMAGEGEN_DAILY_LIMIT":
+            try:
+                val = str(max(int(val), 1))
+            except ValueError:
+                val = "30"
+        updates[key] = val
+
+    lines = (
+        ENV_FILE.read_text(encoding="utf-8").splitlines()
+        if ENV_FILE.exists()
+        else []
+    )
+    seen: set[str] = set()
+    out: list[str] = []
+    for line in lines:
+        m = re.match(r"^([A-Z_]+)=", line)
+        if m and m.group(1) in updates:
+            key = m.group(1)
+            seen.add(key)
+            out.append(f"{key}={updates[key]}")
+        else:
+            out.append(line)
+    if len(seen) < len(IMAGEGEN_ENV_KEYS):
+        if out and out[-1].strip():
+            out.append("")
+        out.append("# ---- AI 生图表情包（可选，不填不影响其他功能）----")
+        for key in IMAGEGEN_ENV_KEYS:
+            if key not in seen:
+                out.append(f"{key}={updates[key]}")
+    ENV_FILE.write_text("\n".join(out) + "\n", encoding="utf-8")
+    return updates
+
+
+def ref_image_status() -> dict:
+    """参考图当前状态：有没有图、体积、尺寸（给配置页面回显用）。"""
+    if not REF_IMAGE_PATH.is_file():
+        return {"ok": True, "exists": False}
+    try:
+        from PIL import Image
+
+        with Image.open(REF_IMAGE_PATH) as im:
+            w, h = im.size
+        return {
+            "ok": True,
+            "exists": True,
+            "size": REF_IMAGE_PATH.stat().st_size,
+            "width": w,
+            "height": h,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": True, "exists": True, "broken": str(exc)}
+
+
+def ref_image_save(b64_data: str) -> dict:
+    """把前端传来的 base64 图片解码存成参考图。
+
+    只接受 PNG/JPEG、≤8MB、能过 PIL 校验的图；存之前先备份旧图。
+    """
+    import base64
+    import binascii
+
+    raw = b64_data or ""
+    if "," in raw and raw.lstrip().lower().startswith("data:"):
+        raw = raw.split(",", 1)[1]
+    try:
+        blob = base64.b64decode(raw, validate=True)
+    except (binascii.Error, ValueError):
+        return {"ok": False, "error": "图片数据不是合法的 base64"}
+    if not blob:
+        return {"ok": False, "error": "图片是空的"}
+    if len(blob) > 8 * 1024 * 1024:
+        return {"ok": False, "error": "图片超过 8MB，换张小一点的"}
+
+    # 格式与完整性校验：顺带归一化成 PNG（插件上传 edits 端点时
+    # 不关心格式，统一 PNG 最稳）
+    import io
+
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(blob)) as im:
+            im.load()
+            fmt = (im.format or "").upper()
+            if fmt not in ("PNG", "JPEG", "WEBP"):
+                return {"ok": False, "error": f"只支持 PNG/JPEG/WebP，收到 {fmt or '未知格式'}"}
+            converted = io.BytesIO()
+            im.convert("RGB").save(converted, format="PNG")
+            payload = converted.getvalue()
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"图片解析失败：{exc}"}
+
+    REF_IMAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if REF_IMAGE_PATH.is_file():
+        backup = REF_IMAGE_PATH.with_suffix(".bak.png")
+        try:
+            backup.write_bytes(REF_IMAGE_PATH.read_bytes())
+        except OSError:
+            pass  # 备份失败不阻塞新图上传
+    REF_IMAGE_PATH.write_bytes(payload)
+    info(f"[launcher] 参考图已更新（{len(payload) // 1024}KB）")
+    return ref_image_status()
+
+
+def ref_image_clear() -> dict:
+    """删掉参考图（角色形象回退为纯文本描述模式）。"""
+    if REF_IMAGE_PATH.is_file():
+        try:
+            REF_IMAGE_PATH.unlink()
+        except OSError as exc:
+            return {"ok": False, "error": f"删除失败：{exc}"}
+    return {"ok": True, "exists": False}
 
 
 def docs_test_conn(client_id: str, access_token: str, open_id: str) -> dict:
@@ -1217,10 +1391,16 @@ def console_tail() -> dict:
 
 
 def _webview_available(py: Path) -> bool:
-    """检查 venv 里能不能 import webview。"""
+    """检查 venv 里能不能 import webview。
+
+    Windows 上光 import webview 不够——edgechromium 后端还依赖 pythonnet
+    （import clr），两者齐了才真的开得了窗口；只测 webview 会把
+    「装了核心没装后端」的半个状态误判成可用，最后在启动器里才炸。
+    """
     try:
+        code = "import webview, clr" if os.name == "nt" else "import webview"
         probe = subprocess.run(
-            [str(py), "-c", "import webview"],
+            [str(py), "-c", code],
             capture_output=True, timeout=60,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
@@ -1811,6 +1991,27 @@ class WebHandler(BaseHTTPRequestHandler):
             })
             return
 
+        if path == "/api/imagegen":
+            env = read_env()
+            self._json({
+                "ok": True,
+                "values": {k: env.get(k, "") for k in IMAGEGEN_ENV_KEYS},
+                "ref": ref_image_status(),
+            })
+            return
+
+        if path == "/api/imagegen/ref":
+            # 参考图预览：浏览器 <img> 直接加载这个地址
+            if not REF_IMAGE_PATH.is_file():
+                body = b""
+                self.send_response(404)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                return
+            self._send_file(REF_IMAGE_PATH, "image/png")
+            return
+
         if path in ("/", "/index.html"):
             path = "/index.html"
 
@@ -1848,6 +2049,28 @@ class WebHandler(BaseHTTPRequestHandler):
                 "ok": True,
                 "note": "已写入 .env；机器人正在运行的话，重启后生效",
             })
+            return
+
+        if path == "/api/imagegen":
+            # 只有真给了 Key 才允许开开关；没 Key 保存时强制关，
+            # 避免「开着生图但没配 Key」每次触发都白跑一趟。
+            key = str(form.get("AI_IMAGEGEN_API_KEY") or "").strip()
+            if not key:
+                form["AI_IMAGEGEN_ENABLED"] = "false"
+            updates = save_imagegen_env(form)
+            self._json({
+                "ok": True,
+                "values": updates,
+                "note": "已写入 .env；机器人正在运行的话，重启后生效",
+            })
+            return
+
+        if path == "/api/imagegen/ref":
+            self._json(ref_image_save(str(form.get("image") or "")))
+            return
+
+        if path == "/api/imagegen/ref/clear":
+            self._json(ref_image_clear())
             return
 
         if path == "/api/tdocs/test":

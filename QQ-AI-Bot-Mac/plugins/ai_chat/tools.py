@@ -42,6 +42,44 @@ def reply_sender_id(event: Event) -> Optional[int]:
         return None
 
 
+def reply_quote_text(event: Event, max_len: int = 150) -> str:
+    """把被引用（回复）的消息还原成「【引用 XX 的消息】内容」。
+
+    为什么必须单独取：members.render_text / get_plaintext 都只认 text 和 at
+    段，reply 段会被整个丢掉——用户「引用某条消息再 @机器人」时，模型就
+    看不到引用了什么，「他说得对吗」这种话完全接不上。引用为空返回空串。
+    """
+    reply = getattr(event, "reply", None)
+    if reply is None:
+        return ""
+    sender = getattr(reply, "sender", None)
+    user_id = getattr(sender, "user_id", None) if sender else None
+    name = (
+        getattr(sender, "card", "") or getattr(sender, "nickname", "") or ""
+    ).strip() or (f"QQ{user_id}" if user_id else "某人")
+
+    msg = getattr(reply, "message", None)
+    text = ""
+    if msg is not None:
+        try:
+            text = msg.extract_plain_text().strip()
+        except Exception:  # noqa: BLE001
+            text = ""
+        if not text:
+            # 纯图片引用抽不出正文，补个占位让模型知道引用的是图
+            try:
+                if any(seg.type == "image" for seg in msg):
+                    text = "[图片]"
+            except Exception:  # noqa: BLE001
+                pass
+    text = " ".join(text.split())
+    if not text:
+        return ""
+    if len(text) > max_len:
+        text = text[: max_len - 1] + "…"
+    return f"【引用 {name} 的消息】{text}"
+
+
 def target_user_id(event: Event, args: Message, self_id: int) -> Optional[int]:
     """解析「操作对象是谁」：优先命令里 @ 的人，其次被引用消息的发送者。
 

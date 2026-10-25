@@ -1,8 +1,21 @@
 #!/bin/bash
-LOG_DIR="/Users/luoluolink/WorkBuddy/2026-10-11-20-57-49/qq-ai-bot/QQ-AI-Bot-Mac/logs"
+# NapCat 启动器：拉起一个带 --no-sandbox 的 QQ 实例，供机器人登录。
+#
+# QQ 号从项目 .env 的 BOT_QQ 读取（不填也能跑——NapCat 支持纯扫码登录）。
+# 不硬编码任何机器相关的信息（QQ 号/绝对路径），保证脚本可提交、可分享。
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+LOG_DIR="$PROJECT_ROOT/logs"
 mkdir -p "$LOG_DIR"
 export NAPCAT_LOAD=1
-# BOT_QQ_NUM 改成你要登录的 QQ 号（留空则弹出扫码）
-BOT_QQ_NUM="${BOT_QQ_NUM:-10000}"   # ← 占位号，发布仓库用
 
-exec '/Applications/QQ.app/Contents/MacOS/QQ' --no-sandbox -q "$BOT_QQ_NUM" >> "$LOG_DIR/napcat.log" 2>> "$LOG_DIR/napcat.err.log"
+BOT_QQ=""
+if [ -f "$PROJECT_ROOT/.env" ]; then
+  BOT_QQ="$(grep -E '^BOT_QQ=' "$PROJECT_ROOT/.env" | head -1 | cut -d= -f2- | tr -d ' \r\n')"
+fi
+
+QQ_ARGS=(--no-sandbox)
+[ -n "$BOT_QQ" ] && QQ_ARGS+=(-q "$BOT_QQ")
+
+exec '/Applications/QQ.app/Contents/MacOS/QQ' "${QQ_ARGS[@]}" \
+  >> "$LOG_DIR/napcat.log" 2>> "$LOG_DIR/napcat.err.log"

@@ -502,7 +502,11 @@ def _router_prompt() -> str:
         "- 消息里有 http 链接：用户想让保存/收录进文档 → save_link；"
         "只是分享链接求点评或提问 → chat；",
         "- 用户要找/调取群里的东西（文件、图片、视频、资料、精华、文档内容）→ fetch_resource；",
-        "- 「XX发一下」「XX发我」「有没有XX」「求XX」这类索取句式 → fetch_resource（keyword=XX）；",
+        "- 「XX发一下」「XX发我」「求XX」这类索取句式，且 XX 是具体的东西"
+        "（文件/图/照片/视频/表格/链接/软件等资源名词）→ fetch_resource（keyword=XX）；",
+        "- 征求意见、观点、情感类的问句——有没有必要…、要不要…、该不该…、"
+        "你觉得…怎么样、有没有可能…——即使含有「有没有/发一下/求」这些词也是聊天 → chat。"
+        "例：「你说有没有必要读研」→ chat；「有没有团建的照片」→ fetch_resource；",
         "- 问问题、闲聊、要知识、要创作 → chat；",
         "- 是普通提问但恰好含有功能关键词（比如「文档是什么意思」）→ chat；",
         "- 拿不准 → chat。",
@@ -530,18 +534,20 @@ async def _classify(text: str) -> dict:
     if _client is None:
         _client = make_client(cfg.ai_api_key, cfg.ai_api_base, cfg.ai_proxy)
     client = _client
-    kwargs: dict = {
-        "model": cfg.ai_model,
-        "messages": [
-            {"role": "system", "content": _router_prompt()},
-            {"role": "user", "content": text[:500]},
-        ],
-        "temperature": 0.1,
-        "max_tokens": 200,
-    }
-    if cfg.ai_disable_thinking:
-        kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
-    resp = await client.chat.completions.create(**kwargs)
+    from .ai_client import chat_kwargs
+
+    # 200 在 reasoning 模型下可能被吃到只剩半个 JSON，给 400 保底
+    resp = await client.chat.completions.create(
+        **chat_kwargs(
+            [
+                {"role": "system", "content": _router_prompt()},
+                {"role": "user", "content": text[:500]},
+            ],
+            cfg,
+            max_tokens=400,
+            temperature=0.1,
+        )
+    )
     reply = (resp.choices[0].message.content or "").strip()
     data = _extract_json(reply) or {}
     action = str(data.get("action") or "chat").strip()

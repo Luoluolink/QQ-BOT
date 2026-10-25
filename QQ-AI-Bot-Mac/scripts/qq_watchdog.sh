@@ -4,11 +4,12 @@
 # 覆盖三种场景：开机后自动启动、进程崩溃自动重启、与任何终端/对话会话无关。
 #
 # 想手动停某个服务（让看门狗别再拉起）：
-#   touch /Users/luoluolink/WorkBuddy/2026-10-11-20-57-49/qq-ai-bot/QQ-AI-Bot-Mac/.paused_napcat
-#   touch /Users/luoluolink/WorkBuddy/2026-10-11-20-57-49/qq-ai-bot/QQ-AI-Bot-Mac/.paused_bot
+#   touch "$ROOT/.paused_napcat"
+#   touch "$ROOT/.paused_bot"
 # 想恢复：删掉对应的 .paused_* 文件，下一分钟内自动拉起。
 
-ROOT="/Users/luoluolink/WorkBuddy/2026-10-11-20-57-49/qq-ai-bot/QQ-AI-Bot-Mac"
+# 相对定位项目根（本脚本在 scripts/ 下），不硬编码绝对路径
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="$ROOT/logs"
 mkdir -p "$LOG_DIR"
 
