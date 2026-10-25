@@ -41,12 +41,10 @@ from nonebot.adapters.onebot.v11 import (
     PrivateMessageEvent,
 )
 from nonebot.exception import IgnoredException
-from nonebot.matcher import Matcher
 from nonebot.message import run_preprocessor
 from nonebot.params import CommandArg
 from nonebot.plugin import PluginMetadata
 from nonebot.rule import CommandRule, Rule, to_me
-from nonebot.typing import T_State
 from openai import AsyncOpenAI
 
 from .ai_client import chat_kwargs, make_client
@@ -144,17 +142,19 @@ cfg = get_plugin_config(Config)
 # 真要留给自己用：.env 里 AI_COMMANDS_ENABLED=true 并把
 # AI_COMMAND_ADMINS=["你的QQ"] 配上；名单为空等于没开。
 # 拦截是静默的——当没看见，不回复不报错，不给外人反复试探的空间。
-def _is_command_matcher(matcher: type[Matcher]) -> bool:
+def _is_command_matcher(matcher) -> bool:
     return any(
         isinstance(getattr(c, "call", None), CommandRule)
         for c in matcher.rule.checkers
     )
 
 
+# 注意：这里刻意不写参数类型注解。依赖注入会解析注解，
+# 在 python3.13 + nonebot 2.5.0 的环境里，带注解的版本会在
+# 插件导入阶段莫名触发下面的 from . import 循环导入报错，
+# 无注解版本在 3.12/3.13 上都正常（运行时拿到的东西完全一样）。
 @run_preprocessor
-async def _gate_slash_commands(
-    matcher: Matcher, bot: Bot, event: Event, state: T_State
-) -> None:
+async def _gate_slash_commands(matcher, bot, event, state) -> None:
     if not _is_command_matcher(matcher):
         return
     if not cfg.ai_commands_enabled:
