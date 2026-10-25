@@ -1413,6 +1413,13 @@ def run_app_window(port: int) -> int:
     """用 pywebview 开原生窗口加载网页（阻塞到窗口关闭）。"""
     url = f"http://127.0.0.1:{port}/"
     ico = ROOT / "launcher.ico"
+    # macOS 的 Dock 图标走 webview.start(icon=) 参数（cocoa 后端会在
+    # NSApplication 就绪后自己调 setApplicationIconImage_，手动提前设置会被
+    # 应用初始化盖掉）。注意 icon 是 start() 的参数而不是 create_window 的；
+    # pywebview 文档说「仅 GTK/QT」是过时的，macOS 一样生效；
+    # Windows 的 WinForms 后端忽略该参数，那边由 _set_icon 负责。
+    icon_png = ROOT / "assets" / "client_icon.png"
+    icon_kw = {"icon": str(icon_png)} if icon_png.exists() else {}
 
     class _WindowBridge:
         """暴露给网页的自定义标题栏按钮：最小化 / 最大化 / 关闭。"""
@@ -1441,7 +1448,22 @@ def run_app_window(port: int) -> int:
             except Exception:  # noqa: BLE001
                 return None
 
+        @staticmethod
+        def _cocoa_window():
+            """macOS 的 NSWindow（cocoa 后端把它挂在 window.native 上）。"""
+            native = _WindowBridge._get_native()
+            return native if native is not None else None
+
         def minimize(self) -> None:
+            if os.name != "nt":
+                # macOS：js_api 在后台线程，AppKit 必须回主线程调；
+                # performMiniaturize: 是 NSWindow 现成 selector，直接投主线程
+                native = self._cocoa_window()
+                if native is not None:
+                    native.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "performMiniaturize:", None, False
+                    )
+                return
             import clr  # noqa: PLC0415
 
             clr.AddReference("System.Windows.Forms")
@@ -1457,6 +1479,15 @@ def run_app_window(port: int) -> int:
             self._post_to_ui(native, _do)
 
         def toggle_maximize(self) -> None:
+            if os.name != "nt":
+                # macOS 没有传统「最大化」，绿点语义是 zoom（放大/还原），
+                # performZoom: 自带 toggle 行为
+                native = self._cocoa_window()
+                if native is not None:
+                    native.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "performZoom:", None, False
+                    )
+                return
             import clr  # noqa: PLC0415
 
             clr.AddReference("System.Windows.Forms")
@@ -1554,7 +1585,7 @@ def run_app_window(port: int) -> int:
                 time.sleep(0.5)
 
     try:
-        webview.start(_set_icon)
+        webview.start(_set_icon, **icon_kw)
     except Exception as exc:  # noqa: BLE001
         warn(f"内嵌窗口启动失败（{exc}），退回浏览器模式")
         try:
