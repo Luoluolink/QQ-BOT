@@ -795,6 +795,15 @@ body.in-app .stage{padding-top:76px}
         <button type="button" class="ghost" id="test">测试连接（完整对话验证）</button>
       </div>
 
+      <!-- 服务控制：机器人核心和 NapCat 由 launchd 守护（仅 macOS），
+           这里直接下发 restart/stop，不用再开终端动进程 -->
+      <div class="actions" id="svcBar">
+        <button type="button" class="ghost" id="svcRefresh">⟳ 服务状态</button>
+        <button type="button" class="ghost" id="svcRestart">重启机器人服务</button>
+        <button type="button" class="ghost" id="svcStop">停止服务</button>
+      </div>
+      <div class="status" id="svcStatus" hidden></div>
+
       <div class="status" id="status"></div>
 
       <div class="foot">
@@ -1852,6 +1861,70 @@ $("#igKeyToggle").addEventListener("click", function(){
     saveForm();   // 随输入自动保存，下次打开页面不用重新填
   }, true);
 });
+
+/* ---------------- 服务控制（launchd 守护的启停/重启，仅 macOS） ---------------- */
+(function(){
+  const bar = $("#svcBar");
+  if(!bar) return;
+  const out = $("#svcStatus");
+  const show = (html) => { out.hidden = false; out.innerHTML = html; };
+
+  async function refresh(){
+    show("查询中…");
+    try{
+      const r = await fetch("/api/services/status", { cache: "no-store" });
+      const d = await r.json();
+      if(!d.ok || d.platform !== "darwin"){
+        show(d.note || "当前平台不支持服务控制");
+        return;
+      }
+      const a = d.agents || {};
+      const line = (label, name) =>
+        `${name}：${a[label] && a[label].running ? "✅ 运行中"
+                     : (a[label] && a[label].installed ? "⏸ 已停止" : "⚠️ 未安装守护")}`;
+      show(
+        line("cn.jipril.nonebot", "机器人核心") + "<br>" +
+        line("cn.jipril.napcat", "NapCat（QQ）") + "<br>" +
+        (d.ws_connected ? "🟢 消息通道已连接" : "⚪ 消息通道未连接（可能在等扫码或已掉线）")
+      );
+    }catch(e){
+      show("查询失败：" + e);
+    }
+  }
+
+  $("#svcRefresh").addEventListener("click", refresh);
+
+  $("#svcRestart").addEventListener("click", async () => {
+    show("正在重启机器人核心 + NapCat…");
+    try{
+      const d = await post("/api/services/restart", {});
+      show((d.ok ? "✅ 重启指令已下发" : "❌ 失败：" + JSON.stringify(d.results || d.error)) +
+           "，等几秒后点「服务状态」刷新");
+    }catch(e){ show("重启失败：" + e); }
+  });
+
+  // 停止是破坏性动作：两次点击确认（webview 里原生 confirm 不可靠）
+  let stopArmed = false;
+  const stopBtn = $("#svcStop");
+  stopBtn.addEventListener("click", async () => {
+    if(!stopArmed){
+      stopArmed = true;
+      stopBtn.textContent = "再点一次确认停止";
+      setTimeout(() => { stopArmed = false; stopBtn.textContent = "停止服务"; }, 4000);
+      return;
+    }
+    stopArmed = false;
+    stopBtn.textContent = "停止服务";
+    show("正在停止…");
+    try{
+      const d = await post("/api/services/stop", {});
+      show(d.ok ? "✅ 服务已停止（重启用旁边的按钮）"
+                : "❌ 失败：" + JSON.stringify(d.results || d.error));
+    }catch(e){ show("停止失败：" + e); }
+  });
+
+  refresh();   // 打开页面先亮一下当前状态
+})();
 </script>
 </body>
 </html>

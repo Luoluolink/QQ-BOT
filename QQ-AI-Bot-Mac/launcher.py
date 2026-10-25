@@ -1918,6 +1918,84 @@ def run_pipeline(py: Path, form: dict, skip_napcat: bool = False) -> None:
 
 # ---------------------------------------------------------------- HTTP
 
+# ---- 服务控制（macOS：把动作转成 launchctl 指令，客户端即控制台）----
+# bot.py 与 NapCat 由 LaunchAgent 守护（cn.jipril.nonebot / cn.jipril.napcat，
+# 见 ~/Library/LaunchAgents/）。这里暴露状态/重启/停止三个接口给配置页，
+# 「重启机器人」不再需要动终端或手杀进程。
+LAUNCHD_AGENTS = ("cn.jipril.nonebot", "cn.jipril.napcat")
+
+
+def _launchctl(*args: str) -> tuple[int, str]:
+    """跑一条 launchctl，返回 (返回码, 输出)。"""
+    try:
+        r = subprocess.run(
+            ["launchctl", *args], capture_output=True, text=True, timeout=30
+        )
+        return r.returncode, (r.stdout + r.stderr).strip()
+    except Exception as exc:  # noqa: BLE001
+        return 1, repr(exc)
+
+
+def _agent_loaded(label: str) -> bool:
+    rc, _ = _launchctl("print", f"gui/{os.getuid()}/{label}")
+    return rc == 0
+
+
+def services_status() -> dict:
+    """三个维度：两个 launchd agent 是否在跑 + 消息通道（18080）是否连通。
+
+    WS 显示已连接但 QQ 会话可能仍掉线（通道和登录是两层），界面上
+    「通道未连接」是掉线的必要非充分条件，最终以 NapCat 日志为准。
+    """
+    if sys.platform != "darwin":
+        return {
+            "ok": True,
+            "platform": "other",
+            "note": "服务控制仅 macOS（launchd）；Windows 直接关掉各服务的窗口即可",
+        }
+    agents = {}
+    for label in LAUNCHD_AGENTS:
+        rc, text = _launchctl("print", f"gui/{os.getuid()}/{label}")
+        agents[label] = {
+            "installed": rc == 0,
+            "running": rc == 0 and "state = running" in text,
+        }
+    env = read_env()
+    port = str(env.get("PORT") or "8080")
+    ws = False
+    try:
+        r = subprocess.run(
+            ["lsof", "-nP", f"-iTCP:{port}"], capture_output=True, text=True, timeout=5
+        )
+        ws = "ESTABLISHED" in (r.stdout or "")
+    except Exception:  # noqa: BLE001
+        pass
+    return {"ok": True, "platform": "darwin", "agents": agents, "ws_connected": ws, "bot_port": port}
+
+
+def services_control(action: str) -> dict:
+    """restart = kickstart -k（没加载过就先 bootstrap）；stop = bootout。"""
+    if sys.platform != "darwin":
+        return {"ok": False, "error": "服务控制仅 macOS（launchd）"}
+    uid_target = f"gui/{os.getuid()}"
+    results = {}
+    for label in LAUNCHD_AGENTS:
+        guid = f"{uid_target}/{label}"
+        plist = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+        if action == "restart":
+            rc, text = _launchctl("kickstart", "-k", guid)
+            if rc != 0 and not _agent_loaded(label) and plist.exists():
+                rc, text = _launchctl("bootstrap", uid_target, str(plist))
+        elif action == "stop":
+            rc, text = _launchctl("bootout", guid)
+            if rc != 0 and not _agent_loaded(label):
+                rc, text = 0, ""   # 本来就没加载，视为成功
+        else:
+            return {"ok": False, "error": f"未知动作 {action!r}"}
+        results[label] = {"rc": rc, "msg": text[:160]}
+    ok = all(v["rc"] == 0 for v in results.values())
+    return {"ok": ok, "action": action, "results": results}
+
 
 class WebHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -1997,6 +2075,10 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?")[0]
+        if path == "/api/services/status":
+            self._json(services_status())
+            return
+
         if path == "/api/progress":
             with STATE_LOCK:
                 self._json(dict(STATE))
@@ -2067,6 +2149,14 @@ class WebHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         path = self.path.split("?")[0]
         form = self._read_json()
+
+        if path == "/api/services/restart":
+            self._json(services_control("restart"))
+            return
+
+        if path == "/api/services/stop":
+            self._json(services_control("stop"))
+            return
 
         if path == "/api/test":
             self._json(
