@@ -1489,6 +1489,20 @@ def run_app_window(port: int) -> int:
     class _WindowBridge:
         """暴露给网页的自定义标题栏按钮：最小化 / 最大化 / 关闭。"""
 
+        def open_webui(self) -> bool:
+            """在系统默认浏览器里打开 NapCat 管理页。
+
+            pywebview 会吞掉网页里的 window.open / target=_blank（点了
+            没反应的元凶），所以「跳外部」统一走 Python 侧的 webbrowser。
+            token 现取——NapCat 重启换 token 后旧链接照样能用。
+            """
+            import webbrowser  # noqa: PLC0415
+
+            webbrowser.open(
+                f"http://127.0.0.1:{PORT_NAPCAT_WEBUI}/webui?token={_webui_token()}"
+            )
+            return True
+
         @staticmethod
         def _post_to_ui(native, fn) -> bool:
             """把窗体操作 marshal 到 UI 线程执行。

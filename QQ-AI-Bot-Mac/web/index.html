@@ -1237,7 +1237,7 @@ function startProgressPoll(){
         "用手机 QQ 扫描下面的二维码登录；登录完成后机器人就上线了。";
       if(p.webui){
         showStatus("ok",
-          `二维码显示异常？也可以 <a href="${p.webui}" target="_blank" style="color:#ffd9e0">打开 NapCat 原生管理页</a> 扫码`,
+          `二维码显示异常？也可以 <a href="javascript:void(0)" onclick="openNapcat()" style="color:#ffd9e0">打开 NapCat 原生管理页</a> 扫码`,
           $("#status2"));
         lastWebui = p.webui;
         $("#qrbox").classList.add("show");
@@ -1327,6 +1327,16 @@ if("IntersectionObserver" in window){
    浏览器不直接碰 NapCat：轮询启动器的 /api/qr/poll，
    启动器负责拿凭据、取二维码、查状态。 */
 let lastWebui = "";   /* 启动完成后记录 NapCat 页面地址，给「打开管理页」用 */
+
+function openNapcat(){
+  /* 窗口模式走 Python 桥用系统浏览器打开（pywebview 会吞 window.open，
+     点了没反应就是它）；浏览器模式没有桥，退回 window.open。 */
+  if(window.pywebview && window.pywebview.api && window.pywebview.api.open_webui){
+    window.pywebview.api.open_webui();
+    return;
+  }
+  if(lastWebui) window.open(lastWebui, "_blank");
+}
 let qrPollId = null;
 let qrLastUrl = "";
 let qrDone = false;
@@ -1472,9 +1482,7 @@ $("#qrRefresh").addEventListener("click", async () => {
   }, 1200);
 });
 
-$("#goNapcat").addEventListener("click", () => {
-  if(lastWebui) window.open(lastWebui, "_blank");
-});
+$("#goNapcat").addEventListener("click", openNapcat);
 
 /* ---------------- 运行日志 ----------------
    窗口模式下服务输出写进 logs/*.log，这里每秒拉一次末尾。 */
