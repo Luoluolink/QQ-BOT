@@ -1257,6 +1257,10 @@ def write_napcat_config(napcat_dir: Path, env: dict, qq: str = "") -> str:
 #                  initializing / ready / offline / reconnecting
 
 QR_POLL_TIMEOUT = 8
+# 换凭据失败后的冷却秒数。页面 2 秒一拍地轮询，而 NapCat WebUI 的登录
+# 接口有次数限流（webui.json 的 loginRate），跟着硬打会把它打死，谁都恢复不了。
+_CRED_BACKOFF = 25.0
+_cred_backoff_until = 0.0
 
 
 def _napcat_webui_post(path: str, payload: dict, credential: str = "") -> tuple[dict | None, str]:
@@ -1299,6 +1303,7 @@ def napcat_webui_credential(token: str) -> str:
 
 def qr_login_status() -> dict:
     """网页轮询入口：返回登录状态 + 当前二维码 URL（凭据过期自动重登一次）。"""
+    global _cred_backoff_until
     with STATE_LOCK:
         token = STATE.get("token", "")
         cred = STATE.get("cred", "")
@@ -1312,12 +1317,29 @@ def qr_login_status() -> dict:
             return None, str(body.get("message") or "NapCat 返回了错误")
         return body, err
 
-    body, err = _status(cred)
-    if body is None:
-        # 凭据可能过期（NapCat 重启后 JWT 失效），重新换一次再试
+    if not cred:
+        # 没有凭据要先登录换一个；冷却期内直接放弃这一拍
+        if time.time() < _cred_backoff_until:
+            return {"ok": False, "error": "NapCat 网页控制台登录限流中，稍等会自动恢复"}
         cred = napcat_webui_credential(token)
         if not cred:
+            _cred_backoff_until = time.time() + _CRED_BACKOFF
             return {"ok": False, "error": "连不上 NapCat，稍等几秒再试"}
+        _cred_backoff_until = 0.0
+
+    body, err = _status(cred)
+    if body is None:
+        # 凭据可能过期（NapCat 重启后 JWT 失效），重新换一次再试；
+        # 换不到就冷却一阵，别让页面的轮询节奏把 NapCat 的登录限流打死
+        if time.time() < _cred_backoff_until:
+            return {"ok": False, "error": err or "NapCat 暂时没有响应"}
+        cred = napcat_webui_credential(token)
+        if not cred:
+            _cred_backoff_until = time.time() + _CRED_BACKOFF
+            with STATE_LOCK:
+                STATE["cred"] = ""
+            return {"ok": False, "error": "连不上 NapCat，稍等几秒再试"}
+        _cred_backoff_until = 0.0
         body, err = _status(cred)
         if body is None:
             return {"ok": False, "error": err or "NapCat 暂时没有响应"}
@@ -1874,7 +1896,14 @@ def run_pipeline(py: Path, form: dict, skip_napcat: bool = False) -> None:
             return
 
         _set(step=3, text="正在启动 NapCat 协议端 …")
-        if sys.platform == "darwin":
+        napcat_was_running = False
+        if port_in_use(PORT_NAPCAT_WEBUI):
+            # 已经跑着的 NapCat（比如 launchd 守护的那份）绝不能再拉一个：
+            # NapCatStarter 是直接 exec QQ，QQ 叠开第二个实例会把
+            # 登录好的会话顶掉。直接复用它的网页控制台。
+            napcat_was_running = True
+            _push_log("NapCat 已在运行，跳过拉起，直接复用它的网页控制台")
+        elif sys.platform == "darwin":
             # macOS：NapCat 跑在 QQ.app 里，用 open 拉起；
             # 项目里若有 NapCatStarter.app（带快速登录参数）优先用它，
             # 能省掉扫码；NapCat 起来后反向 WS 会自动连回机器人核心
@@ -1905,7 +1934,11 @@ def run_pipeline(py: Path, form: dict, skip_napcat: bool = False) -> None:
             webui=webui,
             token=webui.split("token=")[-1] if "token=" in webui else "",
             cred="",
-            message="用手机 QQ 扫描下面的二维码登录；登录完成后机器人就上线了。",
+            message=(
+                "NapCat 本来就在运行：它已登录的话机器人现在就在线，不用扫码。"
+                if napcat_was_running
+                else "用手机 QQ 扫描下面的二维码登录；登录完成后机器人就上线了。"
+            ),
         )
 
     except Exception as exc:  # noqa: BLE001
@@ -2101,6 +2134,23 @@ class WebHandler(BaseHTTPRequestHandler):
             self._json({
                 "ok": True,
                 "values": {k: env.get(k, "") for k in DOCS_ENV_KEYS},
+            })
+            return
+
+        if path == "/api/config":
+            # 表单预填：把 .env 里已有的配置回给页面，打开就是填好的。
+            # 仅 127.0.0.1 可见，凭证本来就存在这台机器上（与 tdocs 面板同款做法）。
+            env = read_env()
+            self._json({
+                "ok": True,
+                "values": {
+                    "qq": env.get("BOT_QQ", ""),
+                    "botname": env.get("AI_BOT_NAME", ""),
+                    "base": env.get("AI_API_BASE", ""),
+                    "model": env.get("AI_MODEL", ""),
+                    "key": env.get("AI_API_KEY", ""),
+                    "persona": env.get("AI_SYSTEM_PROMPT", ""),
+                },
             })
             return
 

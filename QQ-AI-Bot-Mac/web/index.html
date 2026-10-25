@@ -1200,6 +1200,7 @@ function renderLog(lines){
 
 function backToForm(title, sub, kind, msg){
   stopQrPoll();   /* 重新配置时停掉扫码轮询 */
+  if(progressPollId){ clearInterval(progressPollId); progressPollId = null; }
   $("#doneTitle").textContent = title;
   $("#doneSub").textContent = sub || "";
   showStatus(kind, msg, $("#status2"));
@@ -1208,37 +1209,12 @@ function backToForm(title, sub, kind, msg){
   setStepper(1);
 }
 
-$("#cfg").addEventListener("submit", async e => {
-  e.preventDefault();
-  const { data, bad } = validate();
-  if(bad.length){ showStatus("bad", "还差一点：" + bad.join("；")); return; }
+let progressPollId = null;
 
-  $("#go").disabled = true;
-  hideStatus();
-
-  $("#cfg").style.display = "none";
-  $("#done").classList.add("show");
-  setStepper(4);
-  renderSteps(STEPS, 0);
-  renderLog([]);
-  $("#doneTitle").textContent = "正在启动…";
-  $("#doneSub").textContent = "别关这个窗口，第一次跑可能要几分钟";
-
-  try{
-    const { ok, data:j } = await post("/api/save", data);
-    if(!ok || !j.ok){
-      backToForm("没能开始启动", "", "bad",
-        (j && j.error) || "未知错误，请看启动器窗口里的输出");
-      return;
-    }
-  }catch(err){
-    backToForm("启动器断开了", "", "bad",
-      "和启动器的连接断了（" + err.message + "）。<br>请回到启动器窗口看看它的输出。");
-    return;
-  }
-
-  /* 真正的进度来自启动器 —— 第一次跑要下载 NapCat，可能好几分钟。 */
-  const poll = setInterval(async () => {
+/* 进度轮询：手动提交和「自动接管」共用，state=done/error 时收尾 */
+function startProgressPoll(){
+  if(progressPollId) return;
+  progressPollId = setInterval(async () => {
     let p;
     try{
       const r = await fetch("/api/progress", { cache:"no-store" });
@@ -1252,7 +1228,8 @@ $("#cfg").addEventListener("submit", async e => {
     if(p.text) $("#doneSub").textContent = p.text;
 
     if(p.state === "done"){
-      clearInterval(poll);
+      clearInterval(progressPollId);
+      progressPollId = null;
       const list = p.steps || STEPS;
       renderSteps(list, list.length);
       $("#doneTitle").textContent = "启动成功";
@@ -1270,12 +1247,50 @@ $("#cfg").addEventListener("submit", async e => {
         showStatus("ok", "没拿到 NapCat 的地址，请看启动器窗口里的提示。", $("#status2"));
       }
     }else if(p.state === "error"){
-      clearInterval(poll);
+      clearInterval(progressPollId);
+      progressPollId = null;
       backToForm("启动失败", "", "bad",
         escapeHtml(p.error || p.text || "未知错误") +
         "<br>启动器窗口里有完整的报错信息。");
     }
   }, 700);
+}
+
+/* 进度页视图：手动提交和自动接管共用 */
+function showProgressView(p){
+  $("#cfg").style.display = "none";
+  $("#done").classList.add("show");
+  setStepper(4);
+  renderSteps(STEPS, (p && p.step) || 0);
+  renderLog((p && p.log) || []);
+  $("#doneTitle").textContent = "正在启动…";
+  $("#doneSub").textContent = (p && p.text) || "别关这个窗口，第一次跑可能要几分钟";
+}
+
+$("#cfg").addEventListener("submit", async e => {
+  e.preventDefault();
+  const { data, bad } = validate();
+  if(bad.length){ showStatus("bad", "还差一点：" + bad.join("；")); return; }
+
+  $("#go").disabled = true;
+  hideStatus();
+  showProgressView(null);
+
+  try{
+    const { ok, data:j } = await post("/api/save", data);
+    if(!ok || !j.ok){
+      backToForm("没能开始启动", "", "bad",
+        (j && j.error) || "未知错误，请看启动器窗口里的输出");
+      return;
+    }
+  }catch(err){
+    backToForm("启动器断开了", "", "bad",
+      "和启动器的连接断了（" + err.message + "）。<br>请回到启动器窗口看看它的输出。");
+    return;
+  }
+
+  /* 真正的进度来自启动器 —— 第一次跑要下载 NapCat，可能好几分钟。 */
+  startProgressPoll();
 });
 
 /* ---------------- 步骤指示器：随分组滚动高亮，点击跳转 ---------------- */
@@ -1601,6 +1616,46 @@ autoGrow($("#persona"));
     selectVendor(s.vendor, true);   // keepValues：别把回填好的模型/地址覆盖掉
   }
 })();
+
+/* 服务端预填：.env 里已有的配置直接铺进表单，打开就是填好的。
+   以 .env 为准（它是机器人实际在跑的配置）；仅 127.0.0.1，凭证不出本机。 */
+(async () => {
+  try{
+    const r = await fetch("/api/config", { cache:"no-store" });
+    const d = await r.json();
+    if(!d.ok || !d.values) return;
+    const v = d.values;
+    const put = (sel, val) => { if(val) $(sel).value = val; };
+    put("#qq", v.qq);       put("#botname", v.botname);
+    put("#base", v.base);   put("#model", v.model);
+    put("#key", v.key);     put("#persona", v.persona);
+    if(v.persona) autoGrow($("#persona"));
+    if(v.base){
+      const norm = s => (s || "").replace(/\/+$/, "");
+      const hit = VENDORS.find(x => x.base && norm(x.base) === norm(v.base));
+      if(hit) selectVendor(hit.id, true);
+    }
+    saveForm();
+  }catch(err){ /* 纯浏览器开发模式没有启动器，保持现状 */ }
+})();
+
+/* 表单页自动接管：启动不一定从本页点出来（别的标签页/命令行都行）。
+   表单可见时低频轮询启动状态，发现已经在跑就无缝切到进度页，
+   已经就绪且拿到 NapCat 地址就直接进扫码页。 */
+let progressAdopted = false;
+const formWatcher = setInterval(async () => {
+  if(progressAdopted || $("#cfg").style.display === "none") return;
+  let p;
+  try{
+    const r = await fetch("/api/progress", { cache:"no-store" });
+    p = await r.json();
+  }catch(err){ return; }
+  if(p.state === "running" || (p.state === "done" && p.webui)){
+    progressAdopted = true;
+    showProgressView(p);
+    startProgressPoll();
+  }
+}, 2500);
 
 $("#toggleKey").addEventListener("click", () => {
   const k = $("#key"), b = $("#toggleKey");
