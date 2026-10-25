@@ -131,22 +131,6 @@ body{
   font-size:34px;font-weight:700;letter-spacing:.5px;line-height:1.25;
   animation:rise .7s cubic-bezier(.22,1,.36,1) .08s both;
 }
-.brand .slogan{
-  margin-top:14px;
-  font-size:15.5px;color:var(--text-dim);line-height:1.8;letter-spacing:.3px;
-  animation:rise .7s cubic-bezier(.22,1,.36,1) .16s both;
-}
-.brand .slogan b{color:#ffd9e0;font-weight:600}
-.brand .badges{
-  display:flex;flex-wrap:wrap;gap:8px;margin-top:24px;
-  animation:rise .7s cubic-bezier(.22,1,.36,1) .24s both;
-}
-.badge{
-  font-size:11.5px;color:var(--text-dim);
-  border:1px solid var(--line);border-radius:999px;
-  padding:5px 12px;background:rgba(255,255,255,.05);
-  backdrop-filter:blur(8px);
-}
 
 /* ---------- 卡片内移动端头部（窄屏显示） ---------- */
 .head{display:none}
@@ -207,7 +191,6 @@ body{
 .field{margin-bottom:15px}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:13px}
 label{display:block;font-size:12.5px;color:var(--text-dim);margin-bottom:7px;font-weight:500;letter-spacing:.2px}
-label .opt{color:var(--text-faint);font-weight:400;font-size:11.5px}
 
 input,textarea,select{
   width:100%;font-family:var(--font);font-size:14px;color:var(--text);
@@ -239,11 +222,6 @@ input:focus,textarea:focus,select:focus{
 input.bad,textarea.bad{border-color:rgba(255,122,138,.85);box-shadow:0 0 0 5px rgba(255,122,138,.14)}
 
 /* ---------- 腾讯文档（可选）面板 ---------- */
-.docs-hint{
-  font-size:12px;color:var(--text-faint);line-height:1.7;
-  margin:-6px 0 14px;
-}
-.docs-hint b{color:var(--text-dim);font-weight:500}
 .docs-row{display:flex;gap:9px;margin-top:4px}
 .docs-row button{flex:1;height:40px;font-size:12.5px}
 
@@ -339,7 +317,6 @@ input.bad,textarea.bad{border-color:rgba(255,122,138,.85);box-shadow:0 0 0 5px r
 }
 .dd-item:hover,.dd-item.sel{background:var(--accent-faint)}
 .dd-item .dd-name{display:block;font-size:13.5px;color:var(--text);font-weight:500}
-.dd-item .dd-note{display:block;font-size:11px;color:var(--text-faint);margin-top:2px;line-height:1.5}
 .dd-item.sel .dd-name::after{content:" ✓";color:var(--accent)}
 
 /* 人设预设 chips + 随机按钮 */
@@ -473,11 +450,6 @@ button.ghost:disabled{opacity:.5;cursor:not-allowed}
 }
 #consText.show{display:block}
 
-.foot{
-  margin-top:22px;padding-top:17px;border-top:1px solid rgba(255,255,255,.09);
-  font-size:11.5px;color:var(--text-faint);text-align:center;line-height:1.7;
-}
-
 /* ---------- 自定义标题栏（无边框窗口） ---------- */
 .titlebar{
   position:fixed;top:0;left:0;right:0;height:40px;z-index:100;
@@ -557,8 +529,6 @@ body.in-app .stage{padding-top:76px}
   .brand .mark img{border-radius:13px}
   .brand .mark::after{border-radius:13px}
   .brand h1{font-size:20px}
-  .brand .slogan{margin-top:4px;font-size:12.5px}
-  .brand .badges{display:none}
 }
 @media (max-width:560px){
   .card{padding:26px 20px 22px;border-radius:20px}
@@ -570,7 +540,7 @@ body.in-app .stage{padding-top:76px}
 /* ---------- 无障碍：系统关闭动画时全部静态 ---------- */
 @media (prefers-reduced-motion:reduce){
   .bg img{animation:none}
-  .card,.brand .mark,.brand h1,.brand .slogan,.brand .badges,
+  .card,.brand .mark,.brand h1,
   .stepper,.group,.actions,.done,.qrbox{animation:none}
   input,textarea,.dd-btn,.dd-panel,button,.stdot,.chev{transition:none}
   .spin{animation-duration:1.6s}
@@ -654,12 +624,6 @@ button.ghost:hover{box-shadow:inset 0 0 14px rgba(217,167,186,.14), 0 4px 18px -
     <div class="mark"><img src="icon.png" alt="Logo"></div>
     <div>
       <h1>QQ 群 AI 机器人</h1>
-      <p class="slogan">让每个群，都有一个 <b>AI 伙伴</b>。<br>填一次配置，扫码即用。</p>
-    </div>
-    <div class="badges">
-      <span class="badge">🤖 人设可定制</span>
-      <span class="badge">🖼️ 识图 · 联网 · 爬虫</span>
-      <span class="badge">🔒 密钥只存本机</span>
     </div>
   </aside>
 
@@ -699,7 +663,7 @@ button.ghost:hover{box-shadow:inset 0 0 14px rgba(217,167,186,.14), 0 4px 18px -
             <label for="vendorDD">模型供应商<span class="tip" tabindex="0" data-tip="选好会自动填接口地址和模型名称，填完仍可手动改">?</span></label>
             <div class="dd" id="vendorDD">
               <button type="button" class="dd-btn" id="vendorBtn">
-                <span id="vendorBtnName">小米 MiMo</span>
+                <span id="vendorBtnName">DeepSeek</span>
                 <svg class="chev" width="12" height="8" viewBox="0 0 12 8" fill="none"><path d="M1 1.5L6 6.5L11 1.5" stroke="#fff" stroke-opacity=".7" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
               </button>
               <div class="dd-panel" id="vendorPanel"></div>
@@ -707,12 +671,12 @@ button.ghost:hover{box-shadow:inset 0 0 14px rgba(217,167,186,.14), 0 4px 18px -
           </div>
           <div>
             <label for="model">模型名称<span class="tip" tabindex="0" data-tip="选供应商会自动填，随时可以直接改成任意模型名">?</span></label>
-            <input id="model" name="model" autocomplete="off" placeholder="mimo-v2.6-flash">
+            <input id="model" name="model" autocomplete="off" placeholder="deepseek-chat">
           </div>
         </div>
         <div class="field">
-          <label for="base">接口地址 <span class="opt">Base URL</span></label>
-          <input id="base" name="base" autocomplete="off" placeholder="https://api.xiaomimimo.com/v1">
+          <label for="base">接口地址</label>
+          <input id="base" name="base" autocomplete="off" placeholder="https://api.deepseek.com/v1">
         </div>
         <div class="field">
           <label for="key">API Key<span class="tip" tabindex="0" id="keyTip" data-tip="只存在你自己的电脑上，不会上传到任何地方">?</span></label>
@@ -730,7 +694,7 @@ button.ghost:hover{box-shadow:inset 0 0 14px rgba(217,167,186,.14), 0 4px 18px -
         <div class="gtitle">人设</div>
         <div class="field">
           <div class="prow">
-            <label for="persona">机器人人设 <span class="opt">决定它说话的语气</span></label>
+            <label for="persona">机器人人设</label>
             <button type="button" class="btn-mini" id="randomPersona" title="随机换一个人设">🎲 随机人设</button>
           </div>
           <textarea id="persona" name="persona" placeholder="描述一下它是什么样的人、怎么说话……"></textarea>
@@ -742,16 +706,12 @@ button.ghost:hover{box-shadow:inset 0 0 14px rgba(217,167,186,.14), 0 4px 18px -
       <!-- 可选：腾讯文档权限（默认收起） -->
       <section class="group" id="grp-docs" hidden>
         <div class="gtitle">腾讯文档（可选）</div>
-        <p class="docs-hint">
-          配置后群里发的链接会<b>自动收藏进腾讯文档 / 表格</b>（能识别表格表头按列写入）。
-          凭证去 <b>docs.qq.com/open</b> 首页「开发者信息」复制。不填也完全不影响其他功能。
-        </p>
         <div class="field">
-          <label for="docsClientId">Client ID<span class="opt">应用ID</span></label>
+          <label for="docsClientId">Client ID</label>
           <input id="docsClientId" autocomplete="off" placeholder="32 位十六进制">
         </div>
         <div class="field">
-          <label for="docsToken">Access Token<span class="opt">30 天有效，过期去开放平台点「重置」</span></label>
+          <label for="docsToken">Access Token</label>
           <input id="docsToken" autocomplete="off" placeholder="eyJhbGciOi...">
         </div>
         <div class="field">
@@ -776,20 +736,15 @@ button.ghost:hover{box-shadow:inset 0 0 14px rgba(217,167,186,.14), 0 4px 18px -
       <!-- 可选：AI 生图（默认收起） -->
       <section class="group" id="grp-imagegen" hidden>
         <div class="gtitle">AI 生图（可选）</div>
-        <p class="docs-hint">
-          机器人能<b>结合群聊话题即兴画表情包</b>，也可以 @它说「画一张X」点名作画——
-          自画像卖萌是画它自己，小鸟风景就画内容。生图接口和对话模型是两套，填好下面即可。
-          不填或保持关闭，都不影响其他功能。
-        </p>
         <div class="field">
-          <label for="igEnabled">启用生图<span class="opt">保存时填了 Key 会自动亮</span></label>
+          <label for="igEnabled">启用生图</label>
           <select id="igEnabled">
             <option value="false">关闭</option>
             <option value="true">开启</option>
           </select>
         </div>
         <div class="field">
-          <label for="igBase">生图接口地址<span class="opt">OpenAI 兼容，末尾不带 /</span></label>
+          <label for="igBase">生图接口地址</label>
           <input id="igBase" autocomplete="off" placeholder="https://api.openai.com/v1">
         </div>
         <div class="field">
@@ -804,7 +759,7 @@ button.ghost:hover{box-shadow:inset 0 0 14px rgba(217,167,186,.14), 0 4px 18px -
           <input id="igModel" autocomplete="off" placeholder="gpt-image-1">
         </div>
         <div class="field">
-          <label for="igQuality">画质<span class="opt">low 快，high 细节多但慢一截</span></label>
+          <label for="igQuality">画质</label>
           <select id="igQuality">
             <option value="low">low（快）</option>
             <option value="medium">medium</option>
@@ -820,11 +775,11 @@ button.ghost:hover{box-shadow:inset 0 0 14px rgba(217,167,186,.14), 0 4px 18px -
           </select>
         </div>
         <div class="field">
-          <label for="igProb">即兴作画概率<span class="opt">0~1，主动搭话时按概率改去画画</span></label>
+          <label for="igProb">即兴作画概率</label>
           <input id="igProb" type="number" min="0" max="1" step="0.01" placeholder="0.08">
         </div>
         <div class="field">
-          <label for="igLimit">每日张数上限<span class="opt">防烧钱</span></label>
+          <label for="igLimit">每日张数上限</label>
           <input id="igLimit" type="number" min="1" max="999" step="1" placeholder="30">
         </div>
         <div class="field">
@@ -847,8 +802,8 @@ button.ghost:hover{box-shadow:inset 0 0 14px rgba(217,167,186,.14), 0 4px 18px -
       </section>
 
       <div class="actions">
-        <button type="button" class="ghost" id="docsToggle">▸ 腾讯文档权限（可选，不填不影响使用）</button>
-        <button type="button" class="ghost" id="igToggle">▸ AI 生图（可选，不填不影响使用）</button>
+        <button type="button" class="ghost" id="docsToggle">▸ 腾讯文档权限</button>
+        <button type="button" class="ghost" id="igToggle">▸ AI 生图</button>
         <button type="submit" class="primary" id="go">保存并启动</button>
         <button type="button" class="ghost" id="test">测试连接（完整对话验证）</button>
       </div>
@@ -863,11 +818,6 @@ button.ghost:hover{box-shadow:inset 0 0 14px rgba(217,167,186,.14), 0 4px 18px -
       <div class="status" id="svcStatus" hidden></div>
 
       <div class="status" id="status"></div>
-
-      <div class="foot">
-        点「保存并启动」之后会自动写好配置、拉起机器人，<br>
-        然后直接在这一页用手机 QQ 扫码登录，不用再去别的页面。
-      </div>
     </form>
 
     <!-- 提交后：进度 + Token 页 -->
@@ -978,13 +928,12 @@ const statusEl = $("#status");
 /* ---------------- 供应商：自定义下拉 ----------------
    替换原生 select。curVendor 是唯一数据源，
    collect() / applyVendor / 回填逻辑都改读它，数据流不变。 */
-let curVendor = "mimo";
+let curVendor = "deepseek";
 
 function fillVendors(){
   $("#vendorPanel").innerHTML = VENDORS.map(v =>
     `<button type="button" class="dd-item" data-id="${v.id}">` +
-    `<span class="dd-name">${v.name}</span>` +
-    `<span class="dd-note">${v.note}</span></button>`).join("");
+    `<span class="dd-name">${v.name}</span></button>`).join("");
   $("#vendorPanel").addEventListener("click", e => {
     const item = e.target.closest(".dd-item");
     if(!item) return;
@@ -1630,7 +1579,7 @@ if(window.pywebview && window.pywebview.api){
 /* ---------------- 初始化 ---------------- */
 fillVendors();
 fillChips();
-selectVendor("mimo");
+selectVendor("deepseek");
 $("#persona").value = DEFAULT_PERSONA;
 autoGrow($("#persona"));
 
@@ -1673,7 +1622,7 @@ $("#docsToggle").addEventListener("click", () => {
   const show = p.hidden;
   p.hidden = !show;
   $("#docsToggle").textContent =
-    (show ? "▾" : "▸") + " 腾讯文档权限（可选，不填不影响使用）";
+    (show ? "▾" : "▸") + " 腾讯文档权限";
 });
 
 /* 打开面板时从启动器回填 .env 里已保存的值（凭证只在你本机） */
@@ -1763,7 +1712,7 @@ $("#igToggle").addEventListener("click", () => {
   const show = p.hidden;
   p.hidden = !show;
   $("#igToggle").textContent =
-    (show ? "▾" : "▸") + " AI 生图（可选，不填不影响使用）";
+    (show ? "▾" : "▸") + " AI 生图";
 });
 
 /* 展开时从启动器回填 .env 已保存的值 + 参考图状态 */

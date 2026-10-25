@@ -2320,9 +2320,9 @@ def configure_env_cli() -> dict:
         "botname": ask("机器人名字", env.get("AI_BOT_NAME", "") or "小助手"),
         "base": ask(
             "接口地址 Base URL",
-            env.get("AI_API_BASE") or "https://api.xiaomimimo.com/v1",
+            env.get("AI_API_BASE") or "https://api.deepseek.com/v1",
         ),
-        "model": ask("模型名称", env.get("AI_MODEL") or "mimo-v2.6-flash"),
+        "model": ask("模型名称", env.get("AI_MODEL") or "deepseek-chat"),
         "key": ask("API Key", env.get("AI_API_KEY", "")),
         "persona": ask("人设（一句话也行）", DEFAULT_PERSONA),
         "vendor": "cli",

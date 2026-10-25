@@ -9,10 +9,10 @@ from pydantic import BaseModel, Field
 
 class Config(BaseModel):
     # ---------- 模型接入 ----------
-    ai_api_base: str = "https://api.xiaomimimo.com/v1"
+    ai_api_base: str = "https://api.deepseek.com/v1"
     ai_api_key: str = ""
     # 模型 ID 请以平台控制台的模型列表为准
-    ai_model: str = "mimo-v2.6-flash"
+    ai_model: str = "deepseek-chat"
     ai_temperature: float = 0.8
     ai_max_tokens: int = 400
 
