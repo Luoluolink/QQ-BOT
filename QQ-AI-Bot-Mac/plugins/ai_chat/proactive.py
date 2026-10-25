@@ -33,7 +33,7 @@ from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message
 from nonebot.plugin import PluginMetadata
 from nonebot.rule import Rule
 
-from . import ambient, digest, imagegen
+from . import ambient, digest, followup, imagegen
 from .config import Config
 from .tools import at_me
 
@@ -130,12 +130,14 @@ def _rule(bot: Bot, event: Event) -> bool:
     """触发前的廉价判断（不打模型、不落盘）。
 
     真正的闸门（概率/冷却/额度）放在 handler 里做，rule 里只做
-    「这条消息到底可不可能触发」的结构判断：群里、没 @ 我、不是命令。
+    「这条消息到底可不可能触发」的结构判断：群里、没 @ 我、不是命令、
+    不在连续对话中（对方正跟机器人说话，由正常回复路径接，别插嘴）。
     """
     return (
         isinstance(event, GroupMessageEvent)
         and cfg.ai_proactive_enabled
         and not at_me(event, bot.self_id)
+        and not followup.active(event.group_id, event.user_id)
         and not event.get_plaintext().lstrip().startswith(("/", "！", "?", "？"))
     )
 

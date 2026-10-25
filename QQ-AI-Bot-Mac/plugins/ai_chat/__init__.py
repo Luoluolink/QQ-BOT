@@ -59,6 +59,7 @@ from . import (
     docsync,
     essence,
     filetext,
+    followup,
     forward,
     history,
     imagegen,
@@ -917,8 +918,15 @@ def _speaker_label(event: GroupMessageEvent) -> str:
 
 
 def _chat_rule(bot: Bot, event: Event) -> bool:
-    """@ 机器人在任意位置都算（适配器只认开头/结尾，图片打头时 @ 在中间会漏）。"""
-    return tools.at_me(event, bot.self_id)
+    """@ 机器人在任意位置都算（适配器只认开头/结尾，图片打头时 @ 在中间会漏）；
+    或者这个人正在和它连续对话中——@ 过之后短时间内不 @ 接着说也算。"""
+    if tools.at_me(event, bot.self_id):
+        return True
+    return (
+        cfg.ai_followup_enabled
+        and isinstance(event, GroupMessageEvent)
+        and followup.active(event.group_id, event.user_id)
+    )
 
 
 # ---------------------------------------------------------------- 思考过程清洗
@@ -1015,6 +1023,20 @@ async def handle_imagegen(bot: Bot, event: GroupMessageEvent) -> None:
     )
     if not ok:
         await imagegen_cmd.finish("……这张画不出来，换个话题试试")
+
+
+def _followup_settle(event: GroupMessageEvent, group_id: int) -> None:
+    """回复成功送达后结算连续对话窗口：@ 开新一轮（重置额度），
+    「接着说」扣一次额度。发失败不结算，不白占人家的额度。"""
+    if not cfg.ai_followup_enabled:
+        return
+    if tools.at_me(event, event.self_id):
+        followup.activate(
+            group_id, event.user_id,
+            cfg.ai_followup_window, cfg.ai_followup_max_turns,
+        )
+    else:
+        followup.hit(group_id, event.user_id)
 
 
 @chat.handle()
@@ -1225,6 +1247,7 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
         # 先直接 send：卡片段（share）个别 NapCat 版本可能不支持，
         # 失败就撤掉卡片退回纯文本重发，不能让整条回复消失
         await bot.send(event, Message(segments))
+        _followup_settle(event, group_id)
         return
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[ai_chat] 带卡片发送失败，退回纯文本: {exc!r}")
@@ -1233,6 +1256,7 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
     if cfg.ai_reply_quote:
         fallback.append(MessageSegment.reply(event.message_id))
     fallback.append(MessageSegment.text(reply))
+    _followup_settle(event, group_id)
     await chat.finish(Message(fallback))
 
 

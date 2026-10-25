@@ -325,6 +325,16 @@ class Config(BaseModel):
     # 例：AI_COMMAND_ADMINS=["123456","234567"]
     ai_command_admins: list[str] = Field(default_factory=list)
 
+    # ---------- 连续对话窗口 ----------
+    # @ 机器人后，对方短时间内不 @ 直接接着说，机器人也会跟上——
+    # 来回打字总要 @ 太累了。窗口和句数都有限制：超时/说完就回到
+    # 老规矩，想继续就再 @ 一次，防止被无限接话。
+    ai_followup_enabled: bool = True
+    # 机器人回复后多少秒内，对方接着说算同一轮对话
+    ai_followup_window: int = 120
+    # 一次开启最多接几句
+    ai_followup_max_turns: int = 3
+
     # ---------- 主动发言 ----------
     # 群里没 @ 机器人、但聊天内容命中关键词时，按概率插一句话。
     # 这是主动发言，和入群欢迎一样是 QQ 风控最敏感的行为，限流从严：
