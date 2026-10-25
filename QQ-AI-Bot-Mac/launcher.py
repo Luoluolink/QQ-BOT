@@ -1230,6 +1230,8 @@ def write_napcat_config(napcat_dir: Path, env: dict, qq: str = "") -> str:
         )
 
     webui_path = conf_dir / "webui.json"
+    global WEBUI_CONFIG_FILE
+    WEBUI_CONFIG_FILE = webui_path
     if webui_path.exists():
         try:
             webui = json.loads(webui_path.read_text(encoding="utf-8"))
@@ -1263,6 +1265,10 @@ def write_napcat_config(napcat_dir: Path, env: dict, qq: str = "") -> str:
 #                  initializing / ready / offline / reconnecting
 
 QR_POLL_TIMEOUT = 8
+# NapCat 的 webui.json 路径（write_napcat_config 时记录）。
+# QR 轮询每次现读它拿 token：NapCat 重启/重登录后可能换 token，
+# 用启动时缓存的值会一直「token is invalid」，看起来还像限流。
+WEBUI_CONFIG_FILE: Path | None = None
 # 换凭据失败后的冷却秒数。页面 2 秒一拍地轮询，而 NapCat WebUI 的登录
 # 接口有次数限流（webui.json 的 loginRate），跟着硬打会把它打死，谁都恢复不了。
 _CRED_BACKOFF = 25.0
@@ -1307,12 +1313,43 @@ def napcat_webui_credential(token: str) -> str:
     return cred if isinstance(cred, str) else ""
 
 
+def _webui_token() -> str:
+    """拿 NapCat 当前运行时的 WebUI token。
+
+    优先从它的启动日志里取——面板地址带着真实 token 打进 stdout
+    （launchd 接进 logs/napcat.log），而这版 NapCat 会无视 webui.json
+    里的 token 用自己存储的那份，光读配置文件会一直「token is invalid」。
+    日志里没有再退回 webui.json / STATE。
+    """
+    try:
+        text = (ROOT / "logs" / "napcat.log").read_text(
+            encoding="utf-8", errors="replace"
+        )[-400_000:]
+        hits = re.findall(r"WebUi Token: (\S+)|webui\?token=(\S+)", text)
+        if hits:
+            token = hits[-1][0] or hits[-1][1]
+            if token:
+                return token
+    except Exception:  # noqa: BLE001
+        pass
+    if WEBUI_CONFIG_FILE is not None:
+        try:
+            data = json.loads(WEBUI_CONFIG_FILE.read_text(encoding="utf-8"))
+            token = (data or {}).get("token") or ""
+            if token:
+                return str(token)
+        except Exception:  # noqa: BLE001
+            pass
+    with STATE_LOCK:
+        return STATE.get("token", "")
+
+
 def qr_login_status() -> dict:
     """网页轮询入口：返回登录状态 + 当前二维码 URL（凭据过期自动重登一次）。"""
     global _cred_backoff_until
     with STATE_LOCK:
-        token = STATE.get("token", "")
         cred = STATE.get("cred", "")
+    token = _webui_token()
     if not token:
         return {"ok": False, "error": "NapCat 还没启动完成"}
 
@@ -1326,11 +1363,11 @@ def qr_login_status() -> dict:
     if not cred:
         # 没有凭据要先登录换一个；冷却期内直接放弃这一拍
         if time.time() < _cred_backoff_until:
-            return {"ok": False, "error": "NapCat 网页控制台登录限流中，稍等会自动恢复"}
+            return {"ok": False, "error": "NapCat 管理页暂时不可用，稍等自动重试"}
         cred = napcat_webui_credential(token)
         if not cred:
             _cred_backoff_until = time.time() + _CRED_BACKOFF
-            return {"ok": False, "error": "连不上 NapCat，稍等几秒再试"}
+            return {"ok": False, "error": "NapCat 管理页认证失败（token 不同步）——点客户端「重启机器人服务」可重置"}
         _cred_backoff_until = 0.0
 
     body, err = _status(cred)
@@ -1366,15 +1403,15 @@ def qr_login_status() -> dict:
 
 def qr_refresh() -> dict:
     """强制刷新二维码。"""
+    token = _webui_token()
     with STATE_LOCK:
-        token = STATE.get("token", "")
         cred = STATE.get("cred", "")
     if not token:
         return {"ok": False, "error": "NapCat 还没启动完成"}
     if not cred:
         cred = napcat_webui_credential(token)
         if not cred:
-            return {"ok": False, "error": "连不上 NapCat，稍等几秒再试"}
+            return {"ok": False, "error": "NapCat 管理页认证失败——点客户端「重启机器人服务」可重置"}
     body, err = _napcat_webui_post("/api/QQLogin/RefreshQRcode", {}, cred)
     if body is None:
         return {"ok": False, "error": err or "刷新失败"}
