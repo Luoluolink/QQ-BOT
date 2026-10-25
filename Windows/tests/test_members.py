@@ -37,7 +37,7 @@ RAW_MEMBERS = [
         "card": "小a",
         "role": "owner",
         "level": "9",
-        "title": "摸鱼冠军",
+        "title": "图书馆馆长",
     },
     {
         "user_id": 1002,
@@ -107,15 +107,6 @@ async def main() -> None:
     from plugins.ai_chat import members, welcome
 
     from nonebot.adapters.onebot.v11 import MessageSegment
-
-    # 测试必须自洽，不能依赖用户本地的 .env。
-    # 入群欢迎是「主动发消息」，用户很可能关掉它（AI_WELCOME_ENABLED=false），
-    # 那样第 10 节就会一行不跑、报一个看不懂的 IndexError。
-    # 这里把本测试要用到的开关钉死，测的是代码逻辑本身。
-    ac.cfg.ai_member_enabled = True
-    ac.cfg.ai_welcome_enabled = True
-    ac.cfg.ai_welcome_cooldown = 15.0
-    ac.cfg.ai_welcome_daily_limit = 20
 
     # ---------------------------------------------------------------- 解析
     print("1. 成员资料解析（字段名容错 + 群名片优先）")
@@ -205,7 +196,7 @@ async def main() -> None:
     block = members.describe([index.members[0]])
     check("带了防幻觉的固定说法", "【群成员识别结果】" in block, block[:40])
     check("写清了群身份", "群主" in block, block)
-    check("写清了专属头衔", "摸鱼冠军" in block, block)
+    check("写清了专属头衔", "图书馆馆长" in block, block)
     check("要求不知道就说不知道", "别自己想象" in block, block)
     check("空名单返回空串", members.describe([]) == "")
 
@@ -248,11 +239,9 @@ async def main() -> None:
 
     # ---------------------------------------------------------------- 欢迎语
     print("\n8. 欢迎语生成")
-    msgs = welcome.build_messages(
-        "今天的日期是 2026-10-11（星期六）。\n\n你是这个群里的助手。", "小a", 1001
-    )
+    msgs = welcome.build_messages("今天的日期是 2026-10-11（星期六）。", "你是吉普莉尔。", "小a", 1001)
     check("两条消息（system + user）", len(msgs) == 2, len(msgs))
-    check("人设进了 system", "你是这个群里的助手" in msgs[0]["content"])
+    check("人设进了 system", "吉普莉尔" in msgs[0]["content"])
     check("日期进了 system", "2026-10-11" in msgs[0]["content"])
     check("群名片进了 user", "小a" in msgs[1]["content"])
     check("QQ 进了 user", "1001" in msgs[1]["content"])
@@ -302,7 +291,7 @@ async def main() -> None:
 
     async def fake_completion(messages, allow_search=False):
         calls.append((messages, allow_search))
-        return fake_resp("欢迎，小a。有什么想问的直接 @ 我就行。")
+        return fake_resp("哦呀，新的求知者吗。欢迎来到我的图书馆，小a。")
 
     real_completion = ac._create_completion
     ac._create_completion = fake_completion
@@ -315,18 +304,12 @@ async def main() -> None:
     await ac.handle_group_increase(bot2, ev)
 
     check("调了一次模型", len(calls) == 1, len(calls))
-    # 同上：断言失败要报 FAIL，不能让 IndexError 把整节吞掉。
-    check("欢迎语不联网（allow_search=False）", bool(calls) and calls[0][1] is False)
+    check("欢迎语不联网（allow_search=False）", calls[0][1] is False)
     check("发了消息", len(bot2.sent) == 1, bot2.sent)
-    if bot2.sent:
-        sent_msg = bot2.sent[0]["message"]
-        check("发到了正确的群", bot2.sent[0]["group_id"] == 500)
-        check("消息里 @ 了新成员", any(s.type == "at" for s in sent_msg), [s.type for s in sent_msg])
-        check("欢迎语用了模型返回的内容", "有什么想问的" in str(sent_msg), str(sent_msg))
-    else:
-        check("发到了正确的群", False, "上一条就没发出去")
-        check("消息里 @ 了新成员", False, "上一条就没发出去")
-        check("欢迎语用了模型返回的内容", False, "上一条就没发出去")
+    sent_msg = bot2.sent[0]["message"]
+    check("发到了正确的群", bot2.sent[0]["group_id"] == 500)
+    check("消息里 @ 了新成员", any(s.type == "at" for s in sent_msg), [s.type for s in sent_msg])
+    check("欢迎语用了模型返回的内容", "图书馆" in str(sent_msg), str(sent_msg))
     check("记了一次额度", welcome.stats(500)["count"] == 1, welcome.stats(500))
 
     # 冷却期内再有人入群：应该直接跳过，不再调模型
@@ -345,13 +328,9 @@ async def main() -> None:
     welcome._daily_count.clear()
     bot2.sent.clear()
     await ac.handle_group_increase(bot2, FakeIncreaseEvent(group_id=504, user_id=1001))
-    if bot2.sent:
-        body = str(bot2.sent[0]["message"])
-        check("只保留第一行", "群规" not in body, body)
-        check("第一行的内容还在", "欢迎，小a" in body, body)
-    else:
-        check("只保留第一行", False, "压根没发消息")
-        check("第一行的内容还在", False, "压根没发消息")
+    body = str(bot2.sent[0]["message"])
+    check("只保留第一行", "群规" not in body, body)
+    check("第一行的内容还在", "欢迎，小a" in body, body)
 
     # 模型挂了：必须退回模板，而不是不吭声
     async def broken_completion(messages, allow_search=False):
@@ -363,15 +342,12 @@ async def main() -> None:
     bot2.sent.clear()
     await ac.handle_group_increase(bot2, FakeIncreaseEvent(group_id=501, user_id=1001))
     check("模型挂了仍然发了欢迎", len(bot2.sent) == 1, bot2.sent)
-    if bot2.sent:
-        fallback = str(bot2.sent[0]["message"])
-        check(
-            "用的是模板文案（不依赖随机选到哪一条）",
-            any(tpl.format(name="小a") in fallback for tpl in welcome.TEMPLATES),
-            fallback,
-        )
-    else:
-        check("用的是模板文案（不依赖随机选到哪一条）", False, "压根没发消息")
+    fallback = str(bot2.sent[0]["message"])
+    check(
+        "用的是模板文案（不依赖随机选到哪一条）",
+        any(tpl.format(name="小a") in fallback for tpl in welcome.TEMPLATES),
+        fallback,
+    )
 
     # 关掉开关：一个字都不该说
     ac._create_completion = real_completion

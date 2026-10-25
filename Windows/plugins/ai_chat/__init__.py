@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import json
+import base64
 import random
 import re
 import time
@@ -39,22 +40,29 @@ from nonebot.adapters.onebot.v11 import (
     MessageSegment,
     PrivateMessageEvent,
 )
+from nonebot.exception import IgnoredException
+from nonebot.message import run_preprocessor
 from nonebot.params import CommandArg
 from nonebot.plugin import PluginMetadata
-from nonebot.rule import Rule, to_me
+from nonebot.rule import CommandRule, Rule, to_me
 from openai import AsyncOpenAI
 
-from .ai_client import make_client
+from .ai_client import chat_kwargs, make_client
 from . import (
+    account_face,
     admin,
     album,
     album_index,
+    ambient,
     crawler,
+    digest,
     docsync,
     essence,
     filetext,
+    followup,
     forward,
     history,
+    imagegen,
     intent,
     interact,
     linkarchive,
@@ -65,6 +73,7 @@ from . import (
     proactive,
     resource_index,
     stickers,
+    tools,
     vision,
     websearch,
     welcome,
@@ -126,6 +135,33 @@ __plugin_meta__ = PluginMetadata(
 )
 
 cfg = get_plugin_config(Config)
+
+# ---------- 斜杠命令总闸 ----------
+# 插件里所有 on_command 注册的命令（/files /doc /踢 /禁言 /收录 /人设……）
+# 统一在这一处放行，默认全关：谁都不能用命令操作机器人，
+# 群里只保留 @ 它聊天这类自然语言功能。
+# 真要留给自己用：.env 里 AI_COMMANDS_ENABLED=true 并把
+# AI_COMMAND_ADMINS=["你的QQ"] 配上；名单为空等于没开。
+# 拦截是静默的——当没看见，不回复不报错，不给外人反复试探的空间。
+def _is_command_matcher(matcher) -> bool:
+    return any(
+        isinstance(getattr(c, "call", None), CommandRule)
+        for c in matcher.rule.checkers
+    )
+
+
+# 注意：这里刻意不写参数类型注解。依赖注入会解析注解，
+# 在 python3.13 + nonebot 2.5.0 的环境里，带注解的版本会在
+# 插件导入阶段莫名触发下面的 from . import 循环导入报错，
+# 无注解版本在 3.12/3.13 上都正常（运行时拿到的东西完全一样）。
+@run_preprocessor
+async def _gate_slash_commands(matcher, bot, event, state) -> None:
+    if not _is_command_matcher(matcher):
+        return
+    if not cfg.ai_commands_enabled:
+        raise IgnoredException("斜杠命令功能已关闭")
+    if event.get_user_id() not in set(cfg.ai_command_admins):
+        raise IgnoredException("发送者不在命令白名单")
 
 # 每个群一个独立的历史队列
 _history: DefaultDict[int, Deque[dict]] = defaultdict(
@@ -456,6 +492,18 @@ async def _build_linkarchive_context(bot: Bot, group_id: int, text: str) -> str:
     return linkarchive.describe(group_id, text)
 
 
+async def _build_ambient_context(bot: Bot, group_id: int, text: str) -> str:
+    """最近群聊背景：让机器人接得上 @ 它之前群里在聊的话题。
+
+    没 @ 机器人的群聊由 ambient 模块在后台记进环形缓冲，这里取最近几条
+    注入。和 digest 滚动摘要是互补关系：摘要粗而久（跨小时的话题），
+    这里是逐字原文（刚才那几句的细节）。没有记录就返回空串。
+    """
+    if not cfg.ai_ambient_enabled:
+        return ""
+    return ambient.describe(group_id, cfg.ai_ambient_context_count)
+
+
 async def _build_context(
     bot: Bot, group_id: int, text: str, at_qqs: list[int], self_id: int
 ) -> str:
@@ -476,6 +524,7 @@ async def _build_context(
         logger.warning(f"[ai_chat] 群成员识别失败: {exc!r}")
 
     for builder in (
+        _build_ambient_context,
         _build_resource_context,
         _build_essence_context,
         _build_crawler_context,
@@ -550,29 +599,24 @@ async def _create_completion(messages: list[dict], allow_search: bool = False):
     为什么要由调用方传而不是这里自己判断：挂上联网参数会让服务端多做一轮
     「要不要联网」的判断，每条消息因此慢约 1.2 秒，所以不该无脑挂。
     """
-    kwargs: dict = {
-        "model": cfg.ai_model,
-        "messages": messages,
-        "temperature": cfg.ai_temperature,
-        "max_tokens": cfg.ai_max_tokens,
-    }
-
-    # 思考模式控制：通过 extra_body 透传，兼容各家 OpenAI 兼容接口
-    extra_body: dict = {}
-    if cfg.ai_disable_thinking:
-        # 关掉思考。实测 GLM-4.5-air 与 MiMo v2.6-flash 都认这个字段，
-        # 关掉后群聊延迟从 4-9s 降到 1-2s，且不占用 max_tokens。
-        extra_body["thinking"] = {"type": "disabled"}
-    if cfg.ai_reasoning_effort:
-        # 仅对「无法关闭思考、只能调档」的模型有意义（如 GLM-5.3 系列）
-        extra_body["reasoning_effort"] = cfg.ai_reasoning_effort
-    if extra_body:
-        kwargs["extra_body"] = extra_body
+    kwargs: dict = chat_kwargs(
+        messages,
+        cfg,
+        max_tokens=cfg.ai_max_tokens,
+        temperature=cfg.ai_temperature,
+    )
 
     # 额度闸门：用尽后不再挂 tools。不挂 tools 就不会产生联网费用，
     # 对话本身照常进行，只是回答基于模型已有知识。
+    # 注意 client 模式（DeepSeek Search API）不在这里挂任何 tools——
+    # 检索在调用模型前就完成了，结果已作为「联网检索结果」注入上下文，
+    # Chat Completions 端点也不认厂商私有的 web_search 工具。
     search_attached = False
-    if cfg.ai_web_search_enabled and allow_search:
+    if (
+        cfg.ai_web_search_enabled
+        and allow_search
+        and cfg.ai_web_search_mode == "server"
+    ):
         if websearch.exhausted(cfg.ai_web_search_daily_limit):
             _warn_search_budget_exhausted()
         else:
@@ -698,13 +742,13 @@ async def _complete_with_reject_retry(
     text: str,
     images: list[dict],
     allow_search: bool,
-    drop_content: str = "",
+    drop_contents: list[str] | None = None,
 ):
     """调用模型并对风控拒绝做两段重试。
 
     第一步：原样重试一次 —— 风控大多是概率性拦截，同样的请求再发
-    一次常就过了。第二步：仍被拦且调用方给了 drop_content（爬虫检索
-    资料段）就去掉它再试 —— 资料里的视频标题/简介是最常见的触发源，
+    一次常就过了。第二步：仍被拦且调用方给了 drop_contents（检索资料段）
+    就去掉它们再试 —— 资料里的视频标题/网页摘录是最常见的触发源，
     去掉后至少能正常对话。全部被拦返回 None，由调用方决定兜底话术。
     """
     resp = await _complete_with_images(
@@ -740,12 +784,14 @@ async def _complete_with_reject_retry(
     if not _looks_rejected(reply):
         return resp
 
-    if drop_content:
+    if drop_contents:
         logger.warning("[ai_chat] 仍被拦截，去掉检索资料后再试一次")
         retry_messages = [
             m
             for m in messages
-            if not (m.get("role") == "system" and m.get("content") == drop_content)
+            if not (
+                m.get("role") == "system" and m.get("content") in drop_contents
+            )
         ]
         resp = await _complete_with_images(
             bot, retry_messages, text, images, allow_search=allow_search
@@ -758,16 +804,101 @@ async def _complete_with_reject_retry(
     return None
 
 
-def _maybe_sticker(text: str) -> Path | None:
-    """决定这次要不要附带表情包。"""
+# 表情包防刷屏：{会话ID: 上次发表情的时间戳}。群聊传群号，私聊传负用户ID。
+# 没有这层冷却的话，「好的」「晚安」这类高频词会每次回复都带图。
+_last_sticker: Dict[int, float] = {}
+
+
+async def _maybe_sticker(bot: Bot, text: str, chat_id: int) -> MessageSegment | None:
+    """决定这次要不要附带表情包（chat_id 用于冷却，群聊传群号、私聊传负用户ID）。
+
+    表情来源分三种，优先级从高到低：
+    1. 明确索要「收藏表情」—— 账号收藏（fetch_custom_face 拉的 URL）
+    2. 明确索要「表情包」—— 默认也优先账号收藏，可用
+       AI_ACCOUNT_FACE_ON_REQUEST 关掉；账号那边没图才回本地 stickers/
+    3. 语义匹配 —— 只走本地：语义表按文件名匹配，账号收藏没有语义可言
+    4. 随机附带 —— 账号收藏和本地按 AI_ACCOUNT_FACE_MIX 概率混发
+
+    返回 None 表示这次不发。返回值直接就是可发送的消息段
+    （本地图走 base64，收藏表情走 URL），调用方拼进 segments 即可。
+    """
     if not cfg.ai_sticker_enabled:
         return None
     directory = stickers.resolve_dir(cfg.ai_sticker_dir)
+    now = time.time()
+    seg: MessageSegment | None = None
+
     if stickers.is_sticker_request(text):
-        return stickers.pick_sticker(directory)
-    if cfg.ai_sticker_probability > 0 and random.random() < cfg.ai_sticker_probability:
-        return stickers.pick_sticker(directory)
-    return None
+        # 明确索要：10 秒短冷却——连着要三次也只当一次，但不能不该给
+        if now - _last_sticker.get(chat_id, 0.0) < 10.0:
+            return None
+        want_account = cfg.ai_account_face_enabled and (
+            account_face.is_face_request(text) or cfg.ai_account_face_on_request
+        )
+        if want_account:
+            seg = await _account_face_segment(bot)
+        if seg is None:
+            path = stickers.pick_sticker(directory)
+            seg = _sticker_segment(path) if path else None
+    else:
+        # 语义匹配 / 随机附带：60 秒冷却，防止「好的」这种词把表情刷屏
+        if now - _last_sticker.get(chat_id, 0.0) < 60.0:
+            return None
+        path = stickers.match_sticker(text, directory)
+        if path is not None:
+            seg = _sticker_segment(path)
+        elif (
+            cfg.ai_sticker_probability > 0
+            and random.random() < cfg.ai_sticker_probability
+        ):
+            # 随机附带：账号收藏和本地按 mix 概率混发
+            if cfg.ai_account_face_enabled and random.random() < cfg.ai_account_face_mix:
+                seg = await _account_face_segment(bot)
+            if seg is None:
+                path = stickers.pick_sticker(directory)
+                seg = _sticker_segment(path) if path else None
+    if seg is not None:
+        _last_sticker[chat_id] = now
+    return seg
+
+
+async def _account_face_segment(bot: Bot) -> MessageSegment | None:
+    """拉一次账号收藏表情并随机挑一个，失败返回 None（调用方退回本地）。"""
+    if not cfg.ai_account_face_enabled:
+        return None
+    url = await account_face.random_face(bot, count=cfg.ai_account_face_count)
+    if url is None:
+        return None
+    return account_face.face_segment(url)
+
+
+def _sticker_segment(path: Path) -> MessageSegment | None:
+    """把本地表情图转成消息段。
+
+    必须走 base64 而不是文件路径：NapCat 的 QQ 跑在 macOS 沙盒容器里，
+    直接传 file:// URI 会被沙盒拦下（retcode 1200 EPERM，
+    日志报 "operation not permitted"）。base64 把图片内容塞进消息体，
+    不依赖 NapCat 读本地文件。代价是每条消息多 100~250KB 流量，可接受。
+    """
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        logger.warning(f"[ai_chat] 表情文件读取失败，本次跳过: {exc!r}")
+        return None
+    if not raw:
+        return None
+    return MessageSegment.image("base64://" + base64.b64encode(raw).decode())
+
+
+def _demote_image_content(history) -> None:
+    """把历史里还带着图片 content 数组的消息降级成纯文本占位。
+
+    历史里只保留最近一轮的图片原内容：QQ 图床 URL 会过期，且每轮都把
+    图片重发一遍的话 token 和延迟都会炸。在新消息入历史前调用。
+    """
+    for msg in history:
+        if isinstance(msg.get("content"), list):
+            msg["content"] = vision.content_to_text(msg["content"])
 
 
 def _speaker_label(event: GroupMessageEvent) -> str:
@@ -787,11 +918,125 @@ def _speaker_label(event: GroupMessageEvent) -> str:
 
 
 def _chat_rule(bot: Bot, event: Event) -> bool:
-    """@ 机器人在任意位置都算（适配器只认开头/结尾，图片打头时 @ 在中间会漏）。"""
-    return tools.at_me(event, bot.self_id)
+    """@ 机器人在任意位置都算（适配器只认开头/结尾，图片打头时 @ 在中间会漏）；
+    或者这个人正在和它连续对话中——@ 过之后短时间内不 @ 接着说也算。"""
+    if tools.at_me(event, bot.self_id):
+        return True
+    return (
+        cfg.ai_followup_enabled
+        and isinstance(event, GroupMessageEvent)
+        and followup.active(event.group_id, event.user_id)
+    )
+
+
+# ---------------------------------------------------------------- 思考过程清洗
+# 偶发故障（实测 MiMo v2.6-flash 挂联网工具时）：模型把内心独白写进正文，
+# 形态是开头的「【搜索结果分析】…所以答案是…」过程叙述，加上结尾的
+# 「我需要用人设的语气回答…」元话语。铁律第 12 条只能降低概率，拦不住
+# 偶发，这里按空行分段兜底：从【…分析…】标题起剥掉过程段，直到元话语
+# 段收尾为止，之后的内容才是真正的回复，原样保留。
+_THOUGHT_TITLE = re.compile(
+    r"^【[^】]{0,20}(?:分析|思考|搜索|检索|推理|内心|心路|结论|整理|理解)[^】]*】"
+)
+_META_TALK = re.compile(
+    r"我需要.{0,50}(?:语气|人设|回答|回复|解释)"
+    r"|我应当.{0,50}(?:语气|人设|回答|回复|解释)"
+    r"|用人设的语气"
+    r"|用.{0,8}的语气(?:来)?回答"
+    r"|让我.{0,20}(?:回答|回复|组织一下语言)"
+    r"|先想一下"
+)
+
+
+def _strip_inner_monologue(reply: str) -> str:
+    """剥掉模型偶尔漏出来的思考过程，只留真正的回复。
+
+    返回空串表示整条都是思考、没有正文——交给上层的空正文分支处理。
+    """
+    if not reply:
+        return reply
+    paragraphs = re.split(r"\n\s*\n", reply.strip())
+    if _THOUGHT_TITLE.match(paragraphs[0].strip()) is None:
+        # 开头不是思考标题，认为没有泄漏，原文返回（正常路径零损耗）
+        return reply.strip()
+    logger.info(f"[ai_chat] 检测到思考过程泄漏，开始清洗: {paragraphs[0][:60]}")
+    kept: list[str] = []
+    in_thought = True
+    for para in paragraphs:
+        body = para.strip()
+        if in_thought:
+            if _META_TALK.search(body):
+                # 元话语段是思考区的收尾；剥掉它，之后的内容就是正文
+                in_thought = False
+                logger.info(f"[ai_chat] 思考过程收尾于: {body[:60]}")
+            continue
+        if body:
+            kept.append(body)
+    return "\n\n".join(kept).strip()
 
 
 chat = on_message(rule=Rule(_chat_rule), priority=50, block=False)
+
+
+def _imagegen_rule(bot: Bot, event: Event) -> bool:
+    """@ 机器人 + 生图意图，且生图功能可用（开了且有 Key）。
+
+    两种意图：
+    - 显式：「画一张/画个/画一个…」触发词
+    - 隐式：没说「画」字，但明显在要求看机器人某个样子，
+      如「你卖萌是什么样子」「你生气的样子」「你长什么样」
+    """
+    text = event.get_plaintext()
+    return (
+        cfg.ai_imagegen_enabled
+        and bool(cfg.ai_imagegen_api_key)
+        and tools.at_me(event, bot.self_id)
+        and (
+            imagegen.is_imagegen_request(text)
+            or imagegen.is_implicit_imagegen_request(text)
+        )
+    )
+
+
+# priority=5 + block=True：比对话匹配器（50）先拦下，
+# 否则机器人会先回一句「好我画」再画图，一句话变两句话
+imagegen_cmd = on_message(rule=Rule(_imagegen_rule), priority=5, block=True)
+
+
+@imagegen_cmd.handle()
+async def handle_imagegen(bot: Bot, event: GroupMessageEvent) -> None:
+    """生图指令：显式「@机器人 画一张X」或隐式「你卖萌是什么样子」。"""
+    text = event.get_plaintext().strip()
+    # 「画一张小猫」→ 话题「小猫」；没说话题就用整句
+    topic = text
+    for word in imagegen.IMAGEGEN_TRIGGERS:
+        if word in topic:
+            topic = topic.split(word, 1)[1]
+            break
+    topic = topic.strip(" ，。！？~～的啊呀") or text
+    # 隐式意图（「你卖萌是什么样子」）没有触发词可切，topic 就是原句，
+    # 交给模型理解；且必然是角色模式（画机器人自己）。
+    implicit = not imagegen.is_imagegen_request(text)
+    await imagegen_cmd.send("好，你看～" if implicit else "等着，我画一张～")
+    ok = await imagegen.generate_and_send(
+        bot, event, topic, mode="character" if implicit else "auto"
+    )
+    if not ok:
+        await imagegen_cmd.finish("……这张画不出来，换个话题试试")
+
+
+def _followup_settle(event: GroupMessageEvent, group_id: int) -> None:
+    """回复成功送达后结算连续对话窗口：@ 开新一轮（重置额度），
+    「接着说」扣一次额度。发失败不结算，不白占人家的额度。"""
+    if not cfg.ai_followup_enabled:
+        return
+    if tools.at_me(event, event.self_id):
+        followup.activate(
+            group_id, event.user_id,
+            cfg.ai_followup_window, cfg.ai_followup_max_turns,
+        )
+    else:
+        followup.hit(group_id, event.user_id)
 
 
 @chat.handle()
@@ -811,6 +1056,12 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
         await members.resolve_ats(bot, group_id, at_qqs) if at_qqs else {}
     )
     text = members.render_text(message, at_names, event.self_id)
+
+    # 引用还原：用户「回复某条消息再 @机器人」时，被引用的内容必须拼进正文，
+    # 否则 render_text 会把 reply 段整个丢掉，「他说得对吗」就断了上下文
+    quote = tools.reply_quote_text(event)
+    if quote:
+        text = f"{quote}\n{text}" if text else quote
 
     images = (
         await vision.collect_images(bot, event, limit=cfg.ai_vision_max_images)
@@ -856,9 +1107,38 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
         }
     ]
 
+    # 是否允许联网：关键词命中（或配置 always）。提前算——client 模式要靠它
+    # 决定要不要在注入上下文前先跑一轮检索。
+    allow_search = cfg.ai_web_search_enabled and (
+        cfg.ai_web_search_trigger == "always"
+        or websearch.looks_like_web_query(text)
+    )
+
     context = await _build_context(bot, group_id, text, at_qqs, event.self_id)
     if context:
         messages.append({"role": "system", "content": context})
+
+    # 联网检索（client 模式）：调 DeepSeek Search API 拿到结果，格式化成
+    # 「联网检索结果」注入。放在群资源 context 之后、历史之前——与检索资料
+    # 同级的参考资料地位。server 模式（MiMo）不在这里检索，工具由模型侧触发。
+    search_ctx = ""
+    if allow_search and cfg.ai_web_search_mode == "client":
+        if websearch.exhausted(cfg.ai_web_search_daily_limit):
+            _warn_search_budget_exhausted()
+        else:
+            results = await websearch.search_web(
+                text,
+                count=cfg.ai_web_search_count,
+                api_key=cfg.ai_api_key,
+                api_base=cfg.ai_api_base,
+            )
+            if results:
+                search_ctx = websearch.format_results(results, text)
+                messages.append({"role": "system", "content": search_ctx})
+                logger.info(
+                    f"[ai_chat] 联网检索 {len(results)} 条，"
+                    f"今日累计 {websearch.rounds()} 轮"
+                )
 
     # 长期记忆注入：/记住 存下的事实，按与本条消息的相关性挑出来给模型。
     # 放在检索结果之后、历史之前——记忆是「明确交代过的事」，优先级应高于闲聊历史。
@@ -866,6 +1146,25 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
         mem_ctx = memory.describe(group_id, text, cfg.ai_memory_max_results)
         if mem_ctx:
             messages.append({"role": "system", "content": mem_ctx})
+
+    # 群聊滚动摘要注入：让机器人知道「群里最近在聊什么」，接得上梗。
+    # 放在记忆之后、历史之前——摘要和记忆同级，都是背景知识，
+    # 且都让位于本轮真正的检索结果（那些排在更前面）。
+    if cfg.ai_digest_enabled:
+        digest_ctx = digest.current(group_id)
+        if digest_ctx:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "【群聊近况】以下是这个群最近在聊的内容的摘要，"
+                        "仅供你理解上下文、接得住话题。它不是本轮问题的答案，"
+                        "回答时要以本轮的检索结果和对方的问题为准，"
+                        "不要编造摘要里没有细节，也不要主动复述摘要：\n"
+                        f"{digest_ctx}"
+                    ),
+                }
+            )
 
     messages.extend(_history[group_id])
 
@@ -883,14 +1182,7 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
     )
     messages.append({"role": "user", "content": user_content})
 
-    # 只有消息命中时效性关键词（或配置成 always）才允许联网。
-    # 原因见 config.py 里 ai_web_search_trigger 的注释：挂上联网参数
-    # 会让服务端多做一轮判断，每条消息白慢约 1.2 秒。
-    allow_search = (
-        cfg.ai_web_search_trigger == "always"
-        or websearch.looks_like_web_query(text)
-    )
-
+    _t0 = time.time()
     try:
         resp = await _complete_with_reject_retry(
             bot,
@@ -898,7 +1190,7 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
             text,
             images,
             allow_search=allow_search,
-            drop_content=context,
+            drop_contents=[c for c in (context, search_ctx) if c],
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[ai_chat] 调用模型失败: {exc!r}")
@@ -909,28 +1201,37 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
         await chat.finish("这条触发了上游内容风控，我答不了，换个问法试试～")
 
     reply = (resp.choices[0].message.content or "").strip()
+    # 兜底清洗：偶发的思考过程泄漏（见 _strip_inner_monologue 注释）
+    cleaned = _strip_inner_monologue(reply)
+    if cleaned != reply:
+        logger.info(f"[ai_chat] 思考过程已清洗: {reply[:80]!r} -> {cleaned[:80]!r}")
+    reply = cleaned
     if not reply:
         logger.warning(
-            "[ai_chat] 模型返回空正文，通常是思考过程把 max_tokens 占满了。"
+            "[ai_chat] 模型返回空正文，或整条都是思考过程被清洗掉了。"
             f"当前 max_tokens={cfg.ai_max_tokens}, "
             f"disable_thinking={cfg.ai_disable_thinking}, "
             f"reasoning_effort={cfg.ai_reasoning_effort!r}, usage={resp.usage}"
         )
-        await chat.finish("模型光顾着思考没写出正文，把 AI_MAX_TOKENS 调大一点试试")
+        await chat.finish("模型光顾着思考没写出正文，稍后再试试～")
 
-    # 记录回复内容（截断）：排查「机器人到底回了什么」全靠它
-    logger.info(f"[ai_chat] 回复({len(reply)}字): {reply[:200]}")
+    # 记录回复内容（截断）：排查「机器人到底回了什么」「回复多慢」全靠它
+    logger.info(f"[ai_chat] 回复({len(reply)}字, {time.time() - _t0:.1f}s): {reply[:200]}")
 
-    # 历史里只留文字：把带图片的 content 数组存进历史的话，
-    # 之后每一轮都会把图片重新发一遍，token 和延迟都会炸。
+    # 历史里只留文字 + 最近一轮的图片原内容：带图的 content 数组直接入历史，
+    # 下一轮先把更早的降级成 [图片] 占位（见 _demote_image_content），
+    # 这样「这是什么猫→那多少钱一只」的多轮看图追问不会断档。
     # 每条历史都带【发言人】标记，模型才能把「谁说过什么」记在正确的人名下。
-    _history[group_id].append(
-        {
-            "role": "user",
-            "content": f"【{speaker}】{vision.history_text(text, images)}",
-        }
-    )
+    _demote_image_content(_history[group_id])
+    _history[group_id].append({"role": "user", "content": user_content})
     _history[group_id].append({"role": "assistant", "content": reply})
+
+    # @ 机器人的这条消息也是群聊内容，记进摘要流水（没 @ 的消息由
+    # proactive 那边记，两边合起来就是完整的群聊记录）。
+    if cfg.ai_digest_enabled:
+        digest.observe(group_id, speaker, text, time.time())
+        # 顺手检查是否该压缩了：到期就起后台任务，不拖慢这条回复
+        digest.maybe_compress(group_id)
 
     segments: list = []
     if cfg.ai_reply_quote:
@@ -938,15 +1239,15 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
     # 链接转卡片：回复里的 B 站/网页链接自动变成分享卡片，失败退回纯文本
     segments.extend(await crawler.linkify(reply, proxy=cfg.ai_crawler_youtube_proxy))
 
-    sticker = _maybe_sticker(text)
+    sticker = await _maybe_sticker(bot, text, group_id)
     if sticker is not None:
-        # 用 file:// URI 而不是裸路径：CQ 码里反斜杠是转义符，Windows 路径会解析出错
-        segments.append(MessageSegment.image(sticker.as_uri()))
+        segments.append(sticker)
 
     try:
         # 先直接 send：卡片段（share）个别 NapCat 版本可能不支持，
         # 失败就撤掉卡片退回纯文本重发，不能让整条回复消失
         await bot.send(event, Message(segments))
+        _followup_settle(event, group_id)
         return
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[ai_chat] 带卡片发送失败，退回纯文本: {exc!r}")
@@ -955,6 +1256,7 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
     if cfg.ai_reply_quote:
         fallback.append(MessageSegment.reply(event.message_id))
     fallback.append(MessageSegment.text(reply))
+    _followup_settle(event, group_id)
     await chat.finish(Message(fallback))
 
 
@@ -1324,6 +1626,7 @@ HELP_TEXT = (
     "· @我 + 说人话 —— 我自己听懂你想干嘛：绑定文档、建文档、找图、\n"
     "  翻收藏链接、记住/忘记事情、换人设……不用背任何命令\n"
     "· @我 + 图片 + 说「存相册」—— 收进群相册\n"
+    "· @我 + 说「表情包」—— 发张表情；说「收藏表情」发我账号里收藏的\n"
     "· @我 + 来首 XXX —— 点歌分享\n"
     "· /文件 XXX —— 查群文件在哪；/文档 XXX —— 查文件内容写了什么\n"
     "· /精华 XXX —— 翻群精华；/历史 XXX —— 查刚才谁说过什么\n"
@@ -1640,6 +1943,9 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
     message = event.get_message()
     at_qqs = []  # 私聊里 @ 没有意义
     text = members.render_text(message, {}, event.self_id)
+    quote = tools.reply_quote_text(event)
+    if quote:
+        text = f"{quote}\n{text}" if text else quote
 
     images = (
         await vision.collect_images(bot, event, limit=cfg.ai_vision_max_images)
@@ -1663,6 +1969,30 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
     ]
     messages.extend(_private_history[user_id])
 
+    # 联网检索（client 模式）：私聊没有群资源 context，但联网照常可用
+    allow_search = cfg.ai_web_search_enabled and (
+        cfg.ai_web_search_trigger == "always"
+        or websearch.looks_like_web_query(text)
+    )
+    search_ctx = ""
+    if allow_search and cfg.ai_web_search_mode == "client":
+        if websearch.exhausted(cfg.ai_web_search_daily_limit):
+            _warn_search_budget_exhausted()
+        else:
+            results = await websearch.search_web(
+                text,
+                count=cfg.ai_web_search_count,
+                api_key=cfg.ai_api_key,
+                api_base=cfg.ai_api_base,
+            )
+            if results:
+                search_ctx = websearch.format_results(results, text)
+                messages.append({"role": "system", "content": search_ctx})
+                logger.info(
+                    f"[ai_chat] 私聊联网检索 {len(results)} 条，"
+                    f"今日累计 {websearch.rounds()} 轮"
+                )
+
     user_content = await vision.build_content(
         bot,
         text,
@@ -1672,14 +2002,15 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
     )
     messages.append({"role": "user", "content": user_content})
 
-    allow_search = (
-        cfg.ai_web_search_trigger == "always"
-        or websearch.looks_like_web_query(text)
-    )
-
+    _t0 = time.time()
     try:
         resp = await _complete_with_reject_retry(
-            bot, messages, text, images, allow_search=allow_search
+            bot,
+            messages,
+            text,
+            images,
+            allow_search=allow_search,
+            drop_contents=[c for c in (search_ctx,) if c],
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[ai_chat] 私聊调用模型失败: {exc!r}")
@@ -1692,18 +2023,18 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
     if not reply:
         await private_chat.finish("模型光顾着思考没写出正文，把 AI_MAX_TOKENS 调大一点试试")
 
-    _private_history[user_id].append(
-        {"role": "user", "content": vision.history_text(text, images)}
-    )
+    _demote_image_content(_private_history[user_id])
+    _private_history[user_id].append({"role": "user", "content": user_content})
     _private_history[user_id].append({"role": "assistant", "content": reply})
+    logger.info(f"[ai_chat] 私聊回复({len(reply)}字, {time.time() - _t0:.1f}s): {reply[:200]}")
 
     segments: list = []
     if cfg.ai_reply_quote:
         segments.append(MessageSegment.reply(event.message_id))
     segments.append(MessageSegment.text(reply))
 
-    sticker = _maybe_sticker(text)
+    sticker = await _maybe_sticker(bot, text, -event.user_id)
     if sticker is not None:
-        segments.append(MessageSegment.image(sticker.as_uri()))
+        segments.append(sticker)
 
     await private_chat.finish(Message(segments))

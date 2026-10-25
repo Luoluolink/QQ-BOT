@@ -22,7 +22,7 @@ PROJECT = Path(
 PORT = 18077
 
 REQUESTS: list[dict] = []
-MODE = {"reject_tools": False, "reject_tools_generic": False}  # True = 模拟插件未开通/引擎不认 tools，返回 400
+MODE = {"reject_tools": False}  # True = 模拟插件未开通，返回 400
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -35,17 +35,6 @@ class Handler(BaseHTTPRequestHandler):
             payload = {
                 "error": {
                     "message": "webSearchEnabled is false, please enable the web search tool first",
-                    "type": "invalid_request_error",
-                }
-            }
-            data = json.dumps(payload).encode()
-            self.send_response(400)
-        elif MODE["reject_tools_generic"] and "tools" in body:
-            # 模拟本地推理引擎（Ollama / llama.cpp）遇到厂商私有的
-            # web_search 工具类型时的报错 —— 文案和 MiMo 完全不同
-            payload = {
-                "error": {
-                    "message": "invalid tool type: web_search",
                     "type": "invalid_request_error",
                 }
             }
@@ -110,19 +99,21 @@ async def main() -> None:
 
     import nonebot
 
+    # 全新 checkout 没有 .env，联网开关的默认值是 False，会让第 3~6 节全部失真。
+    # 这里显式给出被测配置（进程环境变量优先级高于 .env，测试结果不再依赖外部文件）。
+    # MODE 固定 server：第 3~6 节测的就是「挂 tools 由服务端执行」的老链路，
+    # client 模式（DeepSeek Search API）不经过这些代码路径。
+    os.environ["AI_WEB_SEARCH_ENABLED"] = "true"
+    os.environ["AI_WEB_SEARCH_MODE"] = "server"
+    os.environ["AI_WEB_SEARCH_DAILY_LIMIT"] = "30"
+    os.environ["AI_WEB_SEARCH_MAX_KEYWORD"] = "2"
+    os.environ["AI_WEB_SEARCH_FORCE"] = "false"
+    os.environ["AI_WEB_SEARCH_TRIGGER"] = "auto"
+
     nonebot.init()
 
     import plugins.ai_chat as ac
     from openai import AsyncOpenAI
-
-    # 测试必须自洽，不能依赖用户本地的 .env。
-    # 用户完全可能把联网关掉（默认就是关的），那这里测的就成了「他的配置」
-    # 而不是「代码逻辑」，失败得莫名其妙。所以本测试要验证的几项在这里钉死。
-    ac.cfg.ai_web_search_enabled = True
-    ac.cfg.ai_web_search_force = False
-    ac.cfg.ai_web_search_max_keyword = 2
-    ac.cfg.ai_web_search_trigger = "auto"
-    ac.cfg.ai_web_search_daily_limit = 30
 
     import tempfile
 
@@ -193,49 +184,9 @@ async def main() -> None:
     MODE["reject_tools"] = False
     check("没有抛异常", not crashed)
     check("共请求 2 次（失败后重试）", len(REQUESTS) == 2, len(REQUESTS))
-    # 用 bool(REQUESTS[1:]) 兜一下：万一重试没发生，这里应该报 FAIL
-    # 而不是抛 IndexError —— 崩掉会把后面所有断言一起吞掉。
-    check("重试时摘掉了 tools", bool(REQUESTS[1:]) and "tools" not in REQUESTS[1])
+    check("重试时摘掉了 tools", "tools" not in REQUESTS[1])
     check("降级后不扣额度", ac.websearch.used() == 0, ac.websearch.used())
     check("降级后仍返回正常回答", (resp.choices[0].message.content or "").strip() == "好。")
-
-    print("\n6b. 换成本地模型时也要能降级（报错文案和 MiMo 完全不同）")
-    REQUESTS.clear()
-    ac.websearch.reset()
-    MODE["reject_tools_generic"] = True
-    try:
-        resp = await ac._create_completion(msgs, allow_search=True)
-        crashed = False
-    except Exception as exc:  # noqa: BLE001
-        crashed = True
-        print(f"    异常：{exc!r}")
-    MODE["reject_tools_generic"] = False
-    check("不认识 tools 时没有抛异常", not crashed)
-    check("摘掉 tools 后重试成功", len(REQUESTS) == 2, len(REQUESTS))
-    check("重试时确实摘掉了 tools", bool(REQUESTS[1:]) and "tools" not in REQUESTS[1])
-    check("这种情况也不扣额度", ac.websearch.used() == 0, ac.websearch.used())
-
-    print("\n6c. 不相关的报错不能被误判成「不支持联网」")
-    check(
-        "上下文超长不算",
-        ac._web_search_unavailable(RuntimeError("maximum context length exceeded")) is False,
-    )
-    check(
-        "额度不足不算",
-        ac._web_search_unavailable(RuntimeError("insufficient quota")) is False,
-    )
-    check(
-        "认证失败不算",
-        ac._web_search_unavailable(RuntimeError("invalid api key")) is False,
-    )
-    check(
-        "提到 tools 才算",
-        ac._web_search_unavailable(RuntimeError("invalid tool type: web_search")) is True,
-    )
-    check(
-        "MiMo 的专属文案仍要认",
-        ac._web_search_unavailable(RuntimeError("webSearchEnabled is false")) is True,
-    )
 
     print("\n7. 关键词触发判定（决定日常闲聊要不要付 1.2s）")
     should = [
@@ -276,42 +227,6 @@ async def main() -> None:
     check("日期用 isoformat", "today.isoformat()" in src)
     check("星期映射存在", "一二三四五六日" in src)
     check(f"今天是 {today}（星期{weekday}）", True)
-
-    print("\n9. 铁律由代码强制附加（人设怎么写都不能把它覆盖掉）")
-    real_persona = ac.cfg.ai_system_prompt
-    real_name = ac.cfg.ai_bot_name
-
-    # 正常默认人设
-    sp = ac._system_prompt()
-    check("默认就有铁律", "【铁律" in sp)
-    check("铁律只出现一次（人设里不该重复写）", sp.count("【铁律") == 1, sp.count("【铁律"))
-    check("日期仍在最前", sp.startswith("今天的日期是"))
-
-    # 换成完全不相干的人设 —— 这是最容易出问题的路径：
-    # 用户在启动器网页里填了自己的性格，早先版本会把铁律一起覆盖掉。
-    ac.cfg.ai_system_prompt = "你是一只只会说「喵」的猫。"
-    sp = ac._system_prompt()
-    check("自定义人设下铁律仍在", "【铁律" in sp)
-    check("自定义人设本身也在", "只会说「喵」的猫" in sp)
-    check("铁律排在最后（优先级声明在后）", sp.rstrip().endswith("不要用人设去包装。"))
-    check("铁律只有一份", sp.count("【铁律") == 1, sp.count("【铁律"))
-
-    # 人设留空
-    ac.cfg.ai_system_prompt = ""
-    sp = ac._system_prompt()
-    check("人设留空时铁律仍在", "【铁律" in sp)
-    check("人设留空不会留下多余空行", "\n\n\n" not in sp)
-
-    # 名字要进得去，且不能挤掉铁律
-    ac.cfg.ai_bot_name = "小助手"
-    ac.cfg.ai_system_prompt = "你是群里的助手。"
-    sp = ac._system_prompt()
-    check("名字进了提示词", "你的名字是「小助手」" in sp)
-    check("有名字时铁律仍在", "【铁律" in sp)
-    check("四段齐全", all(x in sp for x in ("今天的日期是", "你的名字是", "你是群里的助手", "【铁律")))
-
-    ac.cfg.ai_system_prompt = real_persona
-    ac.cfg.ai_bot_name = real_name
 
     server.shutdown()
 

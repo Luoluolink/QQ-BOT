@@ -28,14 +28,11 @@ DEFAULT_COOLDOWN = 15.0
 DEFAULT_DAILY_LIMIT = 20
 
 # 模型生成失败时的兜底欢迎语
-# 模型生成失败时的兜底文案。
-# 刻意写得中性、不绑定任何人设 —— 用户改人设后这几句依然说得出口。
-# 正常路径是模型按人设现写，这里只在「模型挂了 / 没配 Key / 超时」时用上。
 TEMPLATES = (
-    "欢迎 {name} 进群～有什么想问的直接 @ 我就行。",
-    "{name} 来了，欢迎欢迎。",
-    "欢迎 {name}，记得先看一眼群规。",
-    "{name} 进群啦，大家欢迎一下。",
+    "哦呀，新的求知者吗。欢迎来到我的图书馆，{name}。",
+    "欢迎，{name}。这座图书馆又多了一册尚未读过的书呢。",
+    "{name}，你带来了什么新知识吗？我可是很期待的。",
+    "又一位访客。进来吧，{name}——这里的每一页都值得品尝。",
 )
 
 
@@ -43,19 +40,18 @@ def pick_template(name: str) -> str:
     return random.choice(TEMPLATES).format(name=name)
 
 
-def build_messages(system_prompt: str, name: str, qq: int) -> list[dict]:
+def build_messages(
+    date_line: str, system_prompt: str, name: str, qq: int
+) -> list[dict]:
     """拼出生成欢迎语用的对话。
 
     单独写一段 user 指令而不是把要求塞进人设里，是为了不动人设本身 ——
     人设是长期资产，欢迎只是其中一种用法。
-
-    system_prompt 直接用调用方拼好的那一份（含日期与机器人名字），
-    让欢迎语和正常对话共用同一套身份，不会出现「两种自我认知」。
     """
     return [
         {
             "role": "system",
-            "content": system_prompt,
+            "content": f"{date_line}\n\n{system_prompt}",
         },
         {
             "role": "user",

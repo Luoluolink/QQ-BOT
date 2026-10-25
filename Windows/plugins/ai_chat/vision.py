@@ -232,6 +232,27 @@ async def build_content(
     return parts
 
 
+def content_to_text(content) -> str:
+    """把多模态 content 数组压回纯文本（图片段变 [图片] 占位）。
+
+    历史里只保留最近一轮的图片原内容，更早的用这个函数降级——
+    否则每轮都把图片重发一遍，token 和延迟都会炸。
+    """
+    if isinstance(content, str):
+        return content
+    parts: list[str] = []
+    for piece in content:
+        if not isinstance(piece, dict):
+            continue
+        if piece.get("type") == "text":
+            t = str(piece.get("text") or "").strip()
+            if t:
+                parts.append(t)
+        elif piece.get("type") == "image_url":
+            parts.append("[图片]")
+    return " ".join(parts)
+
+
 def history_text(text: str, images: list[dict]) -> str:
     """存进上下文历史时用的文本。
 

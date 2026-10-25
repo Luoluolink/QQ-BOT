@@ -131,22 +131,6 @@ body{
   font-size:34px;font-weight:700;letter-spacing:.5px;line-height:1.25;
   animation:rise .7s cubic-bezier(.22,1,.36,1) .08s both;
 }
-.brand .slogan{
-  margin-top:14px;
-  font-size:15.5px;color:var(--text-dim);line-height:1.8;letter-spacing:.3px;
-  animation:rise .7s cubic-bezier(.22,1,.36,1) .16s both;
-}
-.brand .slogan b{color:#ffd9e0;font-weight:600}
-.brand .badges{
-  display:flex;flex-wrap:wrap;gap:8px;margin-top:24px;
-  animation:rise .7s cubic-bezier(.22,1,.36,1) .24s both;
-}
-.badge{
-  font-size:11.5px;color:var(--text-dim);
-  border:1px solid var(--line);border-radius:999px;
-  padding:5px 12px;background:rgba(255,255,255,.05);
-  backdrop-filter:blur(8px);
-}
 
 /* ---------- 卡片内移动端头部（窄屏显示） ---------- */
 .head{display:none}
@@ -207,7 +191,6 @@ body{
 .field{margin-bottom:15px}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:13px}
 label{display:block;font-size:12.5px;color:var(--text-dim);margin-bottom:7px;font-weight:500;letter-spacing:.2px}
-label .opt{color:var(--text-faint);font-weight:400;font-size:11.5px}
 
 input,textarea,select{
   width:100%;font-family:var(--font);font-size:14px;color:var(--text);
@@ -239,13 +222,20 @@ input:focus,textarea:focus,select:focus{
 input.bad,textarea.bad{border-color:rgba(255,122,138,.85);box-shadow:0 0 0 5px rgba(255,122,138,.14)}
 
 /* ---------- 腾讯文档（可选）面板 ---------- */
-.docs-hint{
-  font-size:12px;color:var(--text-faint);line-height:1.7;
-  margin:-6px 0 14px;
-}
-.docs-hint b{color:var(--text-dim);font-weight:500}
 .docs-row{display:flex;gap:9px;margin-top:4px}
 .docs-row button{flex:1;height:40px;font-size:12.5px}
+
+/* ---------- AI 生图（可选）面板 ---------- */
+.ig-ref-row{display:flex;gap:14px;align-items:flex-start;margin-top:4px}
+.ig-ref-row img{
+  width:96px;height:96px;object-fit:contain;flex-shrink:0;
+  border:1px solid var(--line-strong);border-radius:12px;
+  background:rgba(255,255,255,.04);
+}
+.ig-ref-side{display:flex;flex-direction:column;gap:8px;flex:1;min-width:0}
+.ig-ref-side .ghost{height:34px;font-size:12px;width:100%}
+.ig-ref-note{font-size:11.5px;color:var(--text-faint);line-height:1.5}
+.ig-ref-note.ok{color:rgba(120,220,160,.9)}
 
 /* ---------- tooltip：说明收纳成 ⓘ ---------- */
 .tip{
@@ -327,7 +317,6 @@ input.bad,textarea.bad{border-color:rgba(255,122,138,.85);box-shadow:0 0 0 5px r
 }
 .dd-item:hover,.dd-item.sel{background:var(--accent-faint)}
 .dd-item .dd-name{display:block;font-size:13.5px;color:var(--text);font-weight:500}
-.dd-item .dd-note{display:block;font-size:11px;color:var(--text-faint);margin-top:2px;line-height:1.5}
 .dd-item.sel .dd-name::after{content:" ✓";color:var(--accent)}
 
 /* 人设预设 chips + 随机按钮 */
@@ -461,11 +450,6 @@ button.ghost:disabled{opacity:.5;cursor:not-allowed}
 }
 #consText.show{display:block}
 
-.foot{
-  margin-top:22px;padding-top:17px;border-top:1px solid rgba(255,255,255,.09);
-  font-size:11.5px;color:var(--text-faint);text-align:center;line-height:1.7;
-}
-
 /* ---------- 自定义标题栏（无边框窗口） ---------- */
 .titlebar{
   position:fixed;top:0;left:0;right:0;height:40px;z-index:100;
@@ -545,8 +529,6 @@ body.in-app .stage{padding-top:76px}
   .brand .mark img{border-radius:13px}
   .brand .mark::after{border-radius:13px}
   .brand h1{font-size:20px}
-  .brand .slogan{margin-top:4px;font-size:12.5px}
-  .brand .badges{display:none}
 }
 @media (max-width:560px){
   .card{padding:26px 20px 22px;border-radius:20px}
@@ -558,7 +540,7 @@ body.in-app .stage{padding-top:76px}
 /* ---------- 无障碍：系统关闭动画时全部静态 ---------- */
 @media (prefers-reduced-motion:reduce){
   .bg img{animation:none}
-  .card,.brand .mark,.brand h1,.brand .slogan,.brand .badges,
+  .card,.brand .mark,.brand h1,
   .stepper,.group,.actions,.done,.qrbox{animation:none}
   input,textarea,.dd-btn,.dd-panel,button,.stdot,.chev{transition:none}
   .spin{animation-duration:1.6s}
@@ -567,6 +549,64 @@ body.in-app .stage{padding-top:76px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:9px}
 ::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.24)}
+/* ================= 光感特效层（对齐 NapCat WebUI 的质感） ================= */
+/* 1) 鼠标跟随光晕：整页一层柔和粉光跟着指针走（screen 混合压在背景图上） */
+.glow-follow{
+  position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:radial-gradient(560px circle at var(--mx,72%) var(--my,30%),
+              rgba(217,167,186,.14) 0%, rgba(217,167,186,.05) 34%, transparent 62%);
+  mix-blend-mode:screen;
+}
+
+/* 2) 主卡片流光描边：一道高光沿 conic 渐变环缓慢绕边，像极光 */
+@property --spin{syntax:"<angle>";inherits:false;initial-value:0deg}
+.card::after{
+  content:"";position:absolute;inset:-1px;
+  border-radius:calc(var(--radius) + 1px);
+  padding:1.2px;
+  background:conic-gradient(from var(--spin),
+    transparent 0deg, transparent 40deg, rgba(244,214,226,.78) 90deg,
+    rgba(217,167,186,.35) 140deg, transparent 200deg, transparent 360deg);
+  -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor;
+  mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite:exclude;
+  pointer-events:none;
+  animation:spin 7s linear infinite;
+}
+@keyframes spin{to{--spin:360deg}}
+
+/* 3) 主按钮光扫：hover 时一道高光斜着掠过 */
+button.primary{position:relative;overflow:hidden}
+button.primary::after{
+  content:"";position:absolute;top:-20%;bottom:-20%;left:-70%;width:44%;
+  background:linear-gradient(100deg, transparent, rgba(255,255,255,.5), transparent);
+  transform:skewX(-22deg);
+  opacity:0;pointer-events:none;
+}
+button.primary:hover::after{animation:sweep .9s cubic-bezier(.3,.6,.3,1) both}
+@keyframes sweep{0%{left:-70%;opacity:1}100%{left:130%;opacity:0}}
+
+/* 4) 标题辉光：文字渐变缓缓流动 + 柔光投影 */
+.brand h1{
+  background:linear-gradient(110deg,#fff 20%,var(--accent) 42%,#f4d6e2 58%,#fff 78%);
+  background-size:220% 100%;
+  -webkit-background-clip:text;background-clip:text;
+  -webkit-text-fill-color:transparent;
+  animation:shine 7s ease-in-out infinite;
+  filter:drop-shadow(0 2px 18px rgba(217,167,186,.35));
+}
+@keyframes shine{0%,100%{background-position:0% 0}50%{background-position:100% 0}}
+
+/* 5) ghost 按钮悬停内透光 */
+button.ghost:hover{box-shadow:inset 0 0 14px rgba(217,167,186,.14), 0 4px 18px -8px rgba(217,167,186,.25)}
+
+/* 系统开了「减弱动态」：光效全部退化为静止（描边定格、标题不流、光晕停在默认位） */
+@media (prefers-reduced-motion:reduce){
+  .card::after{animation:none;--spin:90deg}
+  .brand h1{animation:none}
+  button.primary:hover::after{animation:none;opacity:0}
+}
 </style>
 </head>
 <body>
@@ -584,12 +624,6 @@ body.in-app .stage{padding-top:76px}
     <div class="mark"><img src="icon.png" alt="Logo"></div>
     <div>
       <h1>QQ 群 AI 机器人</h1>
-      <p class="slogan">让每个群，都有一个 <b>AI 伙伴</b>。<br>填一次配置，扫码即用。</p>
-    </div>
-    <div class="badges">
-      <span class="badge">🤖 人设可定制</span>
-      <span class="badge">🖼️ 识图 · 联网 · 爬虫</span>
-      <span class="badge">🔒 密钥只存本机</span>
     </div>
   </aside>
 
@@ -629,7 +663,7 @@ body.in-app .stage{padding-top:76px}
             <label for="vendorDD">模型供应商<span class="tip" tabindex="0" data-tip="选好会自动填接口地址和模型名称，填完仍可手动改">?</span></label>
             <div class="dd" id="vendorDD">
               <button type="button" class="dd-btn" id="vendorBtn">
-                <span id="vendorBtnName">小米 MiMo</span>
+                <span id="vendorBtnName">DeepSeek</span>
                 <svg class="chev" width="12" height="8" viewBox="0 0 12 8" fill="none"><path d="M1 1.5L6 6.5L11 1.5" stroke="#fff" stroke-opacity=".7" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
               </button>
               <div class="dd-panel" id="vendorPanel"></div>
@@ -637,12 +671,12 @@ body.in-app .stage{padding-top:76px}
           </div>
           <div>
             <label for="model">模型名称<span class="tip" tabindex="0" data-tip="选供应商会自动填，随时可以直接改成任意模型名">?</span></label>
-            <input id="model" name="model" autocomplete="off" placeholder="mimo-v2.6-flash">
+            <input id="model" name="model" autocomplete="off" placeholder="deepseek-chat">
           </div>
         </div>
         <div class="field">
-          <label for="base">接口地址 <span class="opt">Base URL</span></label>
-          <input id="base" name="base" autocomplete="off" placeholder="https://api.xiaomimimo.com/v1">
+          <label for="base">接口地址</label>
+          <input id="base" name="base" autocomplete="off" placeholder="https://api.deepseek.com/v1">
         </div>
         <div class="field">
           <label for="key">API Key<span class="tip" tabindex="0" id="keyTip" data-tip="只存在你自己的电脑上，不会上传到任何地方">?</span></label>
@@ -660,7 +694,7 @@ body.in-app .stage{padding-top:76px}
         <div class="gtitle">人设</div>
         <div class="field">
           <div class="prow">
-            <label for="persona">机器人人设 <span class="opt">决定它说话的语气</span></label>
+            <label for="persona">机器人人设</label>
             <button type="button" class="btn-mini" id="randomPersona" title="随机换一个人设">🎲 随机人设</button>
           </div>
           <textarea id="persona" name="persona" placeholder="描述一下它是什么样的人、怎么说话……"></textarea>
@@ -672,16 +706,12 @@ body.in-app .stage{padding-top:76px}
       <!-- 可选：腾讯文档权限（默认收起） -->
       <section class="group" id="grp-docs" hidden>
         <div class="gtitle">腾讯文档（可选）</div>
-        <p class="docs-hint">
-          配置后群里发的链接会<b>自动收藏进腾讯文档 / 表格</b>（能识别表格表头按列写入）。
-          凭证去 <b>docs.qq.com/open</b> 首页「开发者信息」复制。不填也完全不影响其他功能。
-        </p>
         <div class="field">
-          <label for="docsClientId">Client ID<span class="opt">应用ID</span></label>
+          <label for="docsClientId">Client ID</label>
           <input id="docsClientId" autocomplete="off" placeholder="32 位十六进制">
         </div>
         <div class="field">
-          <label for="docsToken">Access Token<span class="opt">30 天有效，过期去开放平台点「重置」</span></label>
+          <label for="docsToken">Access Token</label>
           <input id="docsToken" autocomplete="off" placeholder="eyJhbGciOi...">
         </div>
         <div class="field">
@@ -703,18 +733,91 @@ body.in-app .stage{padding-top:76px}
         <div class="conn-result" id="docsResult"></div>
       </section>
 
+      <!-- 可选：AI 生图（默认收起） -->
+      <section class="group" id="grp-imagegen" hidden>
+        <div class="gtitle">AI 生图（可选）</div>
+        <div class="field">
+          <label for="igEnabled">启用生图</label>
+          <select id="igEnabled">
+            <option value="false">关闭</option>
+            <option value="true">开启</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="igBase">生图接口地址</label>
+          <input id="igBase" autocomplete="off" placeholder="https://api.openai.com/v1">
+        </div>
+        <div class="field">
+          <label for="igKey">生图 API Key</label>
+          <div class="pw">
+            <input id="igKey" type="password" autocomplete="off" placeholder="sk-...">
+            <button type="button" class="btn-mini" id="igKeyToggle">显示</button>
+          </div>
+        </div>
+        <div class="field">
+          <label for="igModel">模型名称</label>
+          <input id="igModel" autocomplete="off" placeholder="gpt-image-1">
+        </div>
+        <div class="field">
+          <label for="igQuality">画质</label>
+          <select id="igQuality">
+            <option value="low">low（快）</option>
+            <option value="medium">medium</option>
+            <option value="high">high（慢）</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="igSize">图片尺寸</label>
+          <select id="igSize">
+            <option value="1024x1024">1024×1024 方形（表情包）</option>
+            <option value="1024x1536">1024×1536 竖版</option>
+            <option value="1536x1024">1536×1024 横版</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="igProb">即兴作画概率</label>
+          <input id="igProb" type="number" min="0" max="1" step="0.01" placeholder="0.08">
+        </div>
+        <div class="field">
+          <label for="igLimit">每日张数上限</label>
+          <input id="igLimit" type="number" min="1" max="999" step="1" placeholder="30">
+        </div>
+        <div class="field">
+          <label for="igRefFile">角色参考图<span class="tip" tabindex="0" data-tip="上传一张角色立绘/设定图。机器人画表情包时以它为参考锁定形象（发型、服装、光环这些标志特征），只换表情和姿势。不上传也能画，但角色全靠文字描述，会不像。">?</span></label>
+          <div class="ig-ref-row">
+            <img id="igRefPreview" alt="参考图预览" hidden>
+            <div class="ig-ref-side">
+              <input type="file" id="igRefFile" accept="image/png,image/jpeg,image/webp" hidden>
+              <button type="button" class="ghost" id="igRefPick">选择图片…</button>
+              <button type="button" class="ghost" id="igRefUpload" disabled>上传参考图</button>
+              <button type="button" class="ghost" id="igRefClear">清除参考图</button>
+              <div class="ig-ref-note" id="igRefNote">未上传</div>
+            </div>
+          </div>
+        </div>
+        <div class="docs-row">
+          <button type="button" class="ghost" id="igSave">保存生图配置</button>
+        </div>
+        <div class="conn-result" id="igResult"></div>
+      </section>
+
       <div class="actions">
-        <button type="button" class="ghost" id="docsToggle">▸ 腾讯文档权限（可选，不填不影响使用）</button>
+        <button type="button" class="ghost" id="docsToggle">▸ 腾讯文档权限</button>
+        <button type="button" class="ghost" id="igToggle">▸ AI 生图</button>
         <button type="submit" class="primary" id="go">保存并启动</button>
         <button type="button" class="ghost" id="test">测试连接（完整对话验证）</button>
       </div>
 
-      <div class="status" id="status"></div>
-
-      <div class="foot">
-        点「保存并启动」之后会自动写好配置、拉起机器人，<br>
-        然后直接在这一页用手机 QQ 扫码登录，不用再去别的页面。
+      <!-- 服务控制：机器人核心和 NapCat 由 launchd 守护（仅 macOS），
+           这里直接下发 restart/stop，不用再开终端动进程 -->
+      <div class="actions" id="svcBar">
+        <button type="button" class="ghost" id="svcRefresh">⟳ 服务状态</button>
+        <button type="button" class="ghost" id="svcRestart">重启机器人服务</button>
+        <button type="button" class="ghost" id="svcStop">停止服务</button>
       </div>
+      <div class="status" id="svcStatus" hidden></div>
+
+      <div class="status" id="status"></div>
     </form>
 
     <!-- 提交后：进度 + Token 页 -->
@@ -825,13 +928,12 @@ const statusEl = $("#status");
 /* ---------------- 供应商：自定义下拉 ----------------
    替换原生 select。curVendor 是唯一数据源，
    collect() / applyVendor / 回填逻辑都改读它，数据流不变。 */
-let curVendor = "mimo";
+let curVendor = "deepseek";
 
 function fillVendors(){
   $("#vendorPanel").innerHTML = VENDORS.map(v =>
     `<button type="button" class="dd-item" data-id="${v.id}">` +
-    `<span class="dd-name">${v.name}</span>` +
-    `<span class="dd-note">${v.note}</span></button>`).join("");
+    `<span class="dd-name">${v.name}</span></button>`).join("");
   $("#vendorPanel").addEventListener("click", e => {
     const item = e.target.closest(".dd-item");
     if(!item) return;
@@ -1098,12 +1200,71 @@ function renderLog(lines){
 
 function backToForm(title, sub, kind, msg){
   stopQrPoll();   /* 重新配置时停掉扫码轮询 */
+  if(progressPollId){ clearInterval(progressPollId); progressPollId = null; }
   $("#doneTitle").textContent = title;
   $("#doneSub").textContent = sub || "";
   showStatus(kind, msg, $("#status2"));
   $("#cfg").style.display = "";
   $("#go").disabled = false;
   setStepper(1);
+}
+
+let progressPollId = null;
+
+/* 进度轮询：手动提交和「自动接管」共用，state=done/error 时收尾 */
+function startProgressPoll(){
+  if(progressPollId) return;
+  progressPollId = setInterval(async () => {
+    let p;
+    try{
+      const r = await fetch("/api/progress", { cache:"no-store" });
+      p = await r.json();
+    }catch(err){
+      return;   // 启动器还在，偶发失败就下次再取
+    }
+
+    if(p.steps) renderSteps(p.steps, p.step);
+    renderLog(p.log);
+    if(p.text) $("#doneSub").textContent = p.text;
+
+    if(p.state === "done"){
+      clearInterval(progressPollId);
+      progressPollId = null;
+      const list = p.steps || STEPS;
+      renderSteps(list, list.length);
+      $("#doneTitle").textContent = "启动成功";
+      $("#doneSub").textContent = p.message ||
+        "用手机 QQ 扫描下面的二维码登录；登录完成后机器人就上线了。";
+      if(p.webui){
+        showStatus("ok",
+          `二维码显示异常？也可以 <a href="javascript:void(0)" onclick="openNapcat()" style="color:#ffd9e0">打开 NapCat 原生管理页</a> 扫码`,
+          $("#status2"));
+        lastWebui = p.webui;
+        $("#qrbox").classList.add("show");
+        startQrPoll();
+        $("#qrbox").scrollIntoView({ behavior:"smooth", block:"center" });
+      }else{
+        showStatus("ok", "没拿到 NapCat 的地址，请看启动器窗口里的提示。", $("#status2"));
+      }
+    }else if(p.state === "error"){
+      clearInterval(progressPollId);
+      progressPollId = null;
+      backToForm("启动失败", "", "bad",
+        escapeHtml(p.error || p.text || "未知错误") +
+        "<br>启动器窗口里有完整的报错信息。");
+    }
+  }, 700);
+}
+
+/* 进度页视图：手动提交和自动接管共用 */
+function showProgressView(p){
+  $("#cfg").style.display = "none";
+  $("#done").classList.add("show");
+  setStepper(4);
+  renderSteps(STEPS, (p && p.step) || 0);
+  renderLog((p && p.log) || []);
+  $("#doneTitle").textContent = "正在启动…";
+  $("#doneSub").textContent = (p && p.text) || "别关这个窗口，第一次跑可能要几分钟";
 }
 
 $("#cfg").addEventListener("submit", async e => {
@@ -1113,14 +1274,7 @@ $("#cfg").addEventListener("submit", async e => {
 
   $("#go").disabled = true;
   hideStatus();
-
-  $("#cfg").style.display = "none";
-  $("#done").classList.add("show");
-  setStepper(4);
-  renderSteps(STEPS, 0);
-  renderLog([]);
-  $("#doneTitle").textContent = "正在启动…";
-  $("#doneSub").textContent = "别关这个窗口，第一次跑可能要几分钟";
+  showProgressView(null);
 
   try{
     const { ok, data:j } = await post("/api/save", data);
@@ -1136,44 +1290,7 @@ $("#cfg").addEventListener("submit", async e => {
   }
 
   /* 真正的进度来自启动器 —— 第一次跑要下载 NapCat，可能好几分钟。 */
-  const poll = setInterval(async () => {
-    let p;
-    try{
-      const r = await fetch("/api/progress", { cache:"no-store" });
-      p = await r.json();
-    }catch(err){
-      return;   // 启动器还在，偶发失败就下次再取
-    }
-
-    if(p.steps) renderSteps(p.steps, p.step);
-    renderLog(p.log);
-    if(p.text) $("#doneSub").textContent = p.text;
-
-    if(p.state === "done"){
-      clearInterval(poll);
-      const list = p.steps || STEPS;
-      renderSteps(list, list.length);
-      $("#doneTitle").textContent = "启动成功";
-      $("#doneSub").textContent = p.message ||
-        "用手机 QQ 扫描下面的二维码登录；登录完成后机器人就上线了。";
-      if(p.webui){
-        showStatus("ok",
-          `二维码显示异常？也可以 <a href="${p.webui}" target="_blank" style="color:#ffd9e0">打开 NapCat 原生管理页</a> 扫码`,
-          $("#status2"));
-        lastWebui = p.webui;
-        $("#qrbox").classList.add("show");
-        startQrPoll();
-        $("#qrbox").scrollIntoView({ behavior:"smooth", block:"center" });
-      }else{
-        showStatus("ok", "没拿到 NapCat 的地址，请看启动器窗口里的提示。", $("#status2"));
-      }
-    }else if(p.state === "error"){
-      clearInterval(poll);
-      backToForm("启动失败", "", "bad",
-        escapeHtml(p.error || p.text || "未知错误") +
-        "<br>启动器窗口里有完整的报错信息。");
-    }
-  }, 700);
+  startProgressPoll();
 });
 
 /* ---------------- 步骤指示器：随分组滚动高亮，点击跳转 ---------------- */
@@ -1210,6 +1327,16 @@ if("IntersectionObserver" in window){
    浏览器不直接碰 NapCat：轮询启动器的 /api/qr/poll，
    启动器负责拿凭据、取二维码、查状态。 */
 let lastWebui = "";   /* 启动完成后记录 NapCat 页面地址，给「打开管理页」用 */
+
+function openNapcat(){
+  /* 窗口模式走 Python 桥用系统浏览器打开（pywebview 会吞 window.open，
+     点了没反应就是它）；浏览器模式没有桥，退回 window.open。 */
+  if(window.pywebview && window.pywebview.api && window.pywebview.api.open_webui){
+    window.pywebview.api.open_webui();
+    return;
+  }
+  if(lastWebui) window.open(lastWebui, "_blank");
+}
 let qrPollId = null;
 let qrLastUrl = "";
 let qrDone = false;
@@ -1355,9 +1482,7 @@ $("#qrRefresh").addEventListener("click", async () => {
   }, 1200);
 });
 
-$("#goNapcat").addEventListener("click", () => {
-  if(lastWebui) window.open(lastWebui, "_blank");
-});
+$("#goNapcat").addEventListener("click", openNapcat);
 
 /* ---------------- 运行日志 ----------------
    窗口模式下服务输出写进 logs/*.log，这里每秒拉一次末尾。 */
@@ -1477,7 +1602,7 @@ if(window.pywebview && window.pywebview.api){
 /* ---------------- 初始化 ---------------- */
 fillVendors();
 fillChips();
-selectVendor("mimo");
+selectVendor("deepseek");
 $("#persona").value = DEFAULT_PERSONA;
 autoGrow($("#persona"));
 
@@ -1500,6 +1625,46 @@ autoGrow($("#persona"));
   }
 })();
 
+/* 服务端预填：.env 里已有的配置直接铺进表单，打开就是填好的。
+   以 .env 为准（它是机器人实际在跑的配置）；仅 127.0.0.1，凭证不出本机。 */
+(async () => {
+  try{
+    const r = await fetch("/api/config", { cache:"no-store" });
+    const d = await r.json();
+    if(!d.ok || !d.values) return;
+    const v = d.values;
+    const put = (sel, val) => { if(val) $(sel).value = val; };
+    put("#qq", v.qq);       put("#botname", v.botname);
+    put("#base", v.base);   put("#model", v.model);
+    put("#key", v.key);     put("#persona", v.persona);
+    if(v.persona) autoGrow($("#persona"));
+    if(v.base){
+      const norm = s => (s || "").replace(/\/+$/, "");
+      const hit = VENDORS.find(x => x.base && norm(x.base) === norm(v.base));
+      if(hit) selectVendor(hit.id, true);
+    }
+    saveForm();
+  }catch(err){ /* 纯浏览器开发模式没有启动器，保持现状 */ }
+})();
+
+/* 表单页自动接管：启动不一定从本页点出来（别的标签页/命令行都行）。
+   表单可见时低频轮询启动状态，发现已经在跑就无缝切到进度页，
+   已经就绪且拿到 NapCat 地址就直接进扫码页。 */
+let progressAdopted = false;
+const formWatcher = setInterval(async () => {
+  if(progressAdopted || $("#cfg").style.display === "none") return;
+  let p;
+  try{
+    const r = await fetch("/api/progress", { cache:"no-store" });
+    p = await r.json();
+  }catch(err){ return; }
+  if(p.state === "running" || (p.state === "done" && p.webui)){
+    progressAdopted = true;
+    showProgressView(p);
+    startProgressPoll();
+  }
+}, 2500);
+
 $("#toggleKey").addEventListener("click", () => {
   const k = $("#key"), b = $("#toggleKey");
   const show = k.type === "password";
@@ -1520,7 +1685,7 @@ $("#docsToggle").addEventListener("click", () => {
   const show = p.hidden;
   p.hidden = !show;
   $("#docsToggle").textContent =
-    (show ? "▾" : "▸") + " 腾讯文档权限（可选，不填不影响使用）";
+    (show ? "▾" : "▸") + " 腾讯文档权限";
 });
 
 /* 打开面板时从启动器回填 .env 里已保存的值（凭证只在你本机） */
@@ -1597,12 +1762,261 @@ $("#docsTest").addEventListener("click", async () => {
   btn.disabled = false; btn.textContent = "测试凭证";
 });
 
+/* ---------------- AI 生图参数（可选，独立于启动流程） ---------------- */
+const igResult = $("#igResult");
+
+function setIgStatus(ok, msg){
+  igResult.className = "conn-result show " + (ok ? "ok" : "bad");
+  igResult.textContent = msg;
+}
+
+$("#igToggle").addEventListener("click", () => {
+  const p = $("#grp-imagegen");
+  const show = p.hidden;
+  p.hidden = !show;
+  $("#igToggle").textContent =
+    (show ? "▾" : "▸") + " AI 生图";
+});
+
+/* 展开时从启动器回填 .env 已保存的值 + 参考图状态 */
+$("#igToggle").addEventListener("click", async () => {
+  if($("#grp-imagegen").hidden) return;
+  try{
+    const r = await fetch("/api/imagegen", { cache:"no-store" });
+    const d = await r.json();
+    if(d.ok && d.values){
+      const v = d.values;
+      if(!$("#igBase").value)  $("#igBase").value  = v.AI_IMAGEGEN_API_BASE || "";
+      if(!$("#igKey").value)   $("#igKey").value   = v.AI_IMAGEGEN_API_KEY || "";
+      if(!$("#igModel").value) $("#igModel").value = v.AI_IMAGEGEN_MODEL || "";
+      if(!$("#igProb").value)  $("#igProb").value  = v.AI_IMAGEGEN_PROBABILITY || "";
+      if(!$("#igLimit").value) $("#igLimit").value = v.AI_IMAGEGEN_DAILY_LIMIT || "";
+      $("#igEnabled").value = v.AI_IMAGEGEN_ENABLED || "false";
+      $("#igQuality").value = v.AI_IMAGEGEN_QUALITY || "low";
+      $("#igSize").value    = v.AI_IMAGEGEN_SIZE || "1024x1024";
+      refreshRefNote(d.ref);
+    }
+  }catch(e){ /* 启动器不在线就算了 */ }
+});
+
+function refreshRefNote(st){
+  const img = $("#igRefPreview"), note = $("#igRefNote");
+  if(st && st.exists){
+    img.hidden = false;
+    img.src = "/api/imagegen/ref?t=" + Date.now();
+    const kb = st.size ? Math.round(st.size / 1024) + "KB" : "";
+    note.textContent = `已上传（${st.width || "?"}×${st.height || "?"}${kb ? "，" + kb : ""}）`;
+    note.classList.add("ok");
+  }else{
+    img.hidden = true;
+    img.removeAttribute("src");
+    note.textContent = "未上传";
+    note.classList.remove("ok");
+  }
+}
+
+/* 选文件 → 本地预览（此时还没上传） */
+$("#igRefPick").addEventListener("click", () => $("#igRefFile").click());
+$("#igRefFile").addEventListener("change", () => {
+  const f = $("#igRefFile").files && $("#igRefFile").files[0];
+  $("#igRefUpload").disabled = !f;
+  if(f){
+    const rd = new FileReader();
+    rd.onload = () => { $("#igRefPreview").hidden = false; $("#igRefPreview").src = rd.result; };
+    rd.readAsDataURL(f);
+  }
+});
+
+/* 上传参考图（base64 走 JSON，避开 multipart） */
+$("#igRefUpload").addEventListener("click", async () => {
+  const f = $("#igRefFile").files && $("#igRefFile").files[0];
+  if(!f) return;
+  const btn = $("#igRefUpload");
+  btn.disabled = true; btn.textContent = "上传中…";
+  setIgStatus(true, "正在上传参考图…");
+  try{
+    const dataUrl = await new Promise((res, rej) => {
+      const rd = new FileReader();
+      rd.onload = () => res(rd.result);
+      rd.onerror = rej;
+      rd.readAsDataURL(f);
+    });
+    const r = await fetch("/api/imagegen/ref", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ image: dataUrl })
+    });
+    const d = await r.json();
+    if(d.ok){
+      setIgStatus(true, "✓ 参考图已更新，下次画表情包就以它为准。");
+      refreshRefNote(d);
+    }else{
+      setIgStatus(false, "✗ 上传失败：" + (d.error || "未知错误"));
+    }
+  }catch(err){
+    setIgStatus(false, "✗ 上传失败（" + err.message + "）");
+  }
+  btn.disabled = false; btn.textContent = "上传参考图";
+});
+
+/* 清除参考图 */
+$("#igRefClear").addEventListener("click", async () => {
+  try{
+    const r = await fetch("/api/imagegen/ref/clear", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"}
+    });
+    const d = await r.json();
+    if(d.ok){
+      setIgStatus(true, "✓ 已清除参考图（角色回到纯文字描述模式）。");
+      refreshRefNote(d);
+    }else{
+      setIgStatus(false, "✗ 清除失败：" + (d.error || "未知错误"));
+    }
+  }catch(err){
+    setIgStatus(false, "✗ 启动器不在线（" + err.message + "）");
+  }
+});
+
+function igCollect(){
+  return {
+    AI_IMAGEGEN_ENABLED: $("#igEnabled").value,
+    AI_IMAGEGEN_API_BASE: $("#igBase").value.trim().replace(/\/+$/, ""),
+    AI_IMAGEGEN_API_KEY:  $("#igKey").value.trim(),
+    AI_IMAGEGEN_MODEL:    $("#igModel").value.trim(),
+    AI_IMAGEGEN_QUALITY:  $("#igQuality").value,
+    AI_IMAGEGEN_SIZE:     $("#igSize").value,
+    AI_IMAGEGEN_PROBABILITY: $("#igProb").value.trim(),
+    AI_IMAGEGEN_DAILY_LIMIT: $("#igLimit").value.trim()
+  };
+}
+
+$("#igSave").addEventListener("click", async () => {
+  const btn = $("#igSave");
+  const c = igCollect();
+  if(c.AI_IMAGEGEN_ENABLED === "true" && !c.AI_IMAGEGEN_API_KEY){
+    setIgStatus(false, "✗ 开了生图但没填 Key——要么补上 Key，要么先关掉开关");
+    return;
+  }
+  btn.disabled = true;
+  try{
+    const r = await fetch("/api/imagegen", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(c)
+    });
+    const d = await r.json();
+    if(d.ok){
+      setIgStatus(true, "✓ 已保存到 .env。机器人正在运行的话，重启后生效。");
+    }else{
+      setIgStatus(false, "✗ 保存失败：" + (d.error || "未知错误"));
+    }
+  }catch(err){
+    setIgStatus(false, "✗ 启动器不在线（" + err.message + "）");
+  }
+  btn.disabled = false;
+});
+
+/* Key 显示/隐藏（与顶部长密码框同行为） */
+$("#igKeyToggle").addEventListener("click", function(){
+  const k = $("#igKey");
+  const show = k.type === "password";
+  k.type = show ? "text" : "password";
+  this.textContent = show ? "隐藏" : "显示";
+});
+
 ["input","change"].forEach(ev => {
   $("#cfg").addEventListener(ev, e => {
     if(e.target.classList) e.target.classList.remove("bad");
     saveForm();   // 随输入自动保存，下次打开页面不用重新填
   }, true);
 });
+
+/* ---------------- 服务控制（launchd 守护的启停/重启，仅 macOS） ---------------- */
+(function(){
+  const bar = $("#svcBar");
+  if(!bar) return;
+  const out = $("#svcStatus");
+  const show = (html) => { out.hidden = false; out.innerHTML = html; };
+
+  async function refresh(){
+    show("查询中…");
+    try{
+      const r = await fetch("/api/services/status", { cache: "no-store" });
+      const d = await r.json();
+      if(!d.ok || d.platform !== "darwin"){
+        show(d.note || "当前平台不支持服务控制");
+        return;
+      }
+      const a = d.agents || {};
+      const line = (label, name) =>
+        `${name}：${a[label] && a[label].running ? "✅ 运行中"
+                     : (a[label] && a[label].installed ? "⏸ 已停止" : "⚠️ 未安装守护")}`;
+      show(
+        line("cn.jipril.nonebot", "机器人核心") + "<br>" +
+        line("cn.jipril.napcat", "NapCat（QQ）") + "<br>" +
+        (d.ws_connected ? "🟢 消息通道已连接" : "⚪ 消息通道未连接（可能在等扫码或已掉线）")
+      );
+    }catch(e){
+      show("查询失败：" + e);
+    }
+  }
+
+  $("#svcRefresh").addEventListener("click", refresh);
+
+  $("#svcRestart").addEventListener("click", async () => {
+    show("正在重启机器人核心 + NapCat…");
+    try{
+      const d = await post("/api/services/restart", {});
+      show((d.ok ? "✅ 重启指令已下发" : "❌ 失败：" + JSON.stringify(d.results || d.error)) +
+           "，等几秒后点「服务状态」刷新");
+    }catch(e){ show("重启失败：" + e); }
+  });
+
+  // 停止是破坏性动作：两次点击确认（webview 里原生 confirm 不可靠）
+  let stopArmed = false;
+  const stopBtn = $("#svcStop");
+  stopBtn.addEventListener("click", async () => {
+    if(!stopArmed){
+      stopArmed = true;
+      stopBtn.textContent = "再点一次确认停止";
+      setTimeout(() => { stopArmed = false; stopBtn.textContent = "停止服务"; }, 4000);
+      return;
+    }
+    stopArmed = false;
+    stopBtn.textContent = "停止服务";
+    show("正在停止…");
+    try{
+      const d = await post("/api/services/stop", {});
+      show(d.ok ? "✅ 服务已停止（重启用旁边的按钮）"
+                : "❌ 失败：" + JSON.stringify(d.results || d.error));
+    }catch(e){ show("停止失败：" + e); }
+  });
+
+  refresh();   // 打开页面先亮一下当前状态
+})();
+
+/* ---------------- 光感特效：鼠标跟随光晕 ---------------- */
+/* 指针走到哪，一层柔和粉光跟到哪（rAF 节流写 CSS 变量）。
+   触屏 / 系统关动画时不挂监听，光晕停在页面右上默认位，仍有一点点氛围。 */
+(function(){
+  const g = document.createElement("div");
+  g.className = "glow-follow";
+  document.body.appendChild(g);
+  if(!window.matchMedia
+     || window.matchMedia("(prefers-reduced-motion: reduce)").matches
+     || window.matchMedia("(pointer: coarse)").matches) return;
+  let raf = 0;
+  addEventListener("pointermove", e => {
+    if(raf) return;
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      const s = document.documentElement.style;
+      s.setProperty("--mx", e.clientX + "px");
+      s.setProperty("--my", e.clientY + "px");
+    });
+  }, { passive:true });
+})();
 </script>
 </body>
 </html>

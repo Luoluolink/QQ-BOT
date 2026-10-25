@@ -445,6 +445,7 @@ def venv_python() -> Path:
 
 SHORTCUT_NAME = "启动机器人.lnk"
 ICON_NAME = "launcher.ico"
+# 用 ASCII 文件名：zip 里的中文文件名在 Windows 资源管理器解压时可能乱码
 BAT_NAME = "start.bat"
 
 
@@ -661,6 +662,12 @@ PORT={port}
 ONEBOT_ACCESS_TOKEN={token}
 COMMAND_START=["/"]
 
+# ---------- 斜杠命令总闸 ----------
+# 默认关：谁都不能用 /命令 操作机器人，群里只保留 @ 它聊天。
+# 想给自己留命令用：改成 true，并把 AI_COMMAND_ADMINS 换成你的 QQ 号
+AI_COMMANDS_ENABLED=false
+AI_COMMAND_ADMINS=[]
+
 # ---------- 机器人身份 ----------
 # 机器人登录用的 QQ 号。这个值用于 NapCat 的快速登录，
 # 不填也不影响使用（照样可以扫码登录）。
@@ -695,6 +702,20 @@ AI_COOLDOWN=5
 AI_DAILY_LIMIT=200
 AI_GROUP_WHITELIST=[]
 AI_REPLY_QUOTE=true
+
+# ---------- AI 生图表情包（可选）----------
+# 结合群聊话题即兴画表情包，也支持 @机器人「画一张X」点名作画。
+# 接口要和对话模型分开配（OpenAI 兼容的生图接口，如 gpt-image 系列）。
+# 不填 / 保持 false 不影响其他功能。
+AI_IMAGEGEN_ENABLED=false
+AI_IMAGEGEN_API_BASE=https://api.openai.com/v1
+AI_IMAGEGEN_API_KEY=
+AI_IMAGEGEN_MODEL=gpt-image-1
+AI_IMAGEGEN_QUALITY=low
+AI_IMAGEGEN_SIZE=1024x1024
+# 即兴作画概率（命中主动搭话时按概率改走生图，0~1）
+AI_IMAGEGEN_PROBABILITY=0.08
+AI_IMAGEGEN_DAILY_LIMIT=30
 """
 
 
@@ -703,6 +724,12 @@ def write_env(form: dict, old: dict) -> dict:
 
     Token 沿用已有的（没有才新建）—— 每次启动都换 Token 会让 NapCat 里
     已经配好的那份对不上，白白多一次排查。
+
+    Mac 版合并策略：网页表单只驱动 6 项（QQ 号 / 名字 / 接口地址 / Key /
+    模型 / 人设），端口和 Token 沿用旧值；**其余所有键旧值优先** ——
+    模板里的默认值是给 Windows 精简版设计的（联网搜索默认关等），
+    直接套用会把 Mac 版已经调好的开关（联网、表情包、YouTube 代理…）
+    悄悄改回去，这类「保存一次配置、功能集体失灵」的问题最难排查。
     """
     token = old.get("ONEBOT_ACCESS_TOKEN", "")
     if not token or not token.isascii() or any(m in token for m in PLACEHOLDER_MARKERS):
@@ -718,7 +745,7 @@ def write_env(form: dict, old: dict) -> dict:
     )
 
     text = ENV_HEADER.format(
-        port=PORT_NONEBOT,
+        port=old.get("PORT") or PORT_NONEBOT,
         token=token,
         qq=(form.get("qq") or "").strip(),
         base=base,
@@ -728,6 +755,36 @@ def write_env(form: dict, old: dict) -> dict:
         persona=dotenv_quote((form.get("persona") or "").strip()),
         vision=vision,
     )
+
+    # 表单驱动的键之外，模板里出现的键一律用旧值覆盖默认值
+    form_driven = {
+        "PORT",
+        "ONEBOT_ACCESS_TOKEN",
+        "BOT_QQ",
+        "AI_API_BASE",
+        "AI_API_KEY",
+        "AI_MODEL",
+        "AI_BOT_NAME",
+        "AI_SYSTEM_PROMPT",
+        # 识图开关由模型名推导，不沿用旧值（换模型后旧值可能失效）
+        "AI_VISION_ENABLED",
+    }
+    template_keys = set(re.findall(r"^([A-Z_]+)=", ENV_HEADER, re.M))
+    for key in sorted(template_keys - form_driven):
+        value = old.get(key, "")
+        if value:
+            text = re.sub(rf"^{key}=.*$", f"{key}={value}", text, flags=re.M)
+
+    # 模板里没有的扩展键（如 ai_crawler_youtube_proxy）追加保留
+    extra = {
+        k: v
+        for k, v in old.items()
+        if k not in template_keys and not k.startswith("_") and v
+    }
+    if extra:
+        text += "\n# ---------- 以下为原有扩展配置，启动器原样保留 ----------\n"
+        text += "\n".join(f"{k}={v}" for k, v in sorted(extra.items())) + "\n"
+
     ENV_FILE.write_text(text, encoding="utf-8")
 
     env = read_env()
@@ -791,6 +848,166 @@ def save_docs_env(params: dict) -> dict:
     return updates
 
 
+# ---------------------------------------------------------------- AI 生图参数
+#
+# 可选功能：结合群聊话题即兴画表情包（gpt-image 系列），也支持 @机器人
+# 「画一张X」点名作画。不填/关开关完全不影响其他功能 —— 插件里
+# _generate() 检测不到 Key 会直接跳过。
+# 参考图（角色立绘）存 assets/jibril_reference.png，由 /api/imagegen/ref
+# 上传；不传也能用（降级为纯文本描述角色，效果差一截）。
+
+IMAGEGEN_ENV_KEYS = (
+    "AI_IMAGEGEN_ENABLED",
+    "AI_IMAGEGEN_API_BASE",
+    "AI_IMAGEGEN_API_KEY",
+    "AI_IMAGEGEN_MODEL",
+    "AI_IMAGEGEN_QUALITY",
+    "AI_IMAGEGEN_PROBABILITY",
+    "AI_IMAGEGEN_DAILY_LIMIT",
+    "AI_IMAGEGEN_SIZE",
+)
+
+IMAGEGEN_QUALITIES = ("low", "medium", "high")
+IMAGEGEN_SIZES = ("1024x1024", "1024x1536", "1536x1024")
+
+# 参考图落点：与插件 imagegen._find_reference() 的默认查找路径一致
+REF_IMAGE_PATH = ROOT / "assets" / "jibril_reference.png"
+
+
+def save_imagegen_env(params: dict) -> dict:
+    """把 AI 生图参数写进 .env，只动这几个键，其余行原样保留。
+
+    空值也会写 `KEY=` 占位（清除 Key = 留空），保证「清空保存」真的清掉。
+    """
+    updates: dict[str, str] = {}
+    for key in IMAGEGEN_ENV_KEYS:
+        val = str(params.get(key) or "").strip().replace("\n", " ")
+        if key == "AI_IMAGEGEN_QUALITY" and val not in IMAGEGEN_QUALITIES:
+            val = "low"
+        if key == "AI_IMAGEGEN_SIZE" and val not in IMAGEGEN_SIZES:
+            val = "1024x1024"
+        if key == "AI_IMAGEGEN_ENABLED" and val not in ("true", "false"):
+            # 有 Key 默认开，没 Key 保持关（前端也会同步这个判断）
+            val = "true" if updates.get("AI_IMAGEGEN_API_KEY") else "false"
+        if key == "AI_IMAGEGEN_PROBABILITY":
+            try:
+                f = float(val)
+                val = str(min(max(f, 0.0), 1.0))
+            except ValueError:
+                val = "0.08"
+        if key == "AI_IMAGEGEN_DAILY_LIMIT":
+            try:
+                val = str(max(int(val), 1))
+            except ValueError:
+                val = "30"
+        updates[key] = val
+
+    lines = (
+        ENV_FILE.read_text(encoding="utf-8").splitlines()
+        if ENV_FILE.exists()
+        else []
+    )
+    seen: set[str] = set()
+    out: list[str] = []
+    for line in lines:
+        m = re.match(r"^([A-Z_]+)=", line)
+        if m and m.group(1) in updates:
+            key = m.group(1)
+            seen.add(key)
+            out.append(f"{key}={updates[key]}")
+        else:
+            out.append(line)
+    if len(seen) < len(IMAGEGEN_ENV_KEYS):
+        if out and out[-1].strip():
+            out.append("")
+        out.append("# ---- AI 生图表情包（可选，不填不影响其他功能）----")
+        for key in IMAGEGEN_ENV_KEYS:
+            if key not in seen:
+                out.append(f"{key}={updates[key]}")
+    ENV_FILE.write_text("\n".join(out) + "\n", encoding="utf-8")
+    return updates
+
+
+def ref_image_status() -> dict:
+    """参考图当前状态：有没有图、体积、尺寸（给配置页面回显用）。"""
+    if not REF_IMAGE_PATH.is_file():
+        return {"ok": True, "exists": False}
+    try:
+        from PIL import Image
+
+        with Image.open(REF_IMAGE_PATH) as im:
+            w, h = im.size
+        return {
+            "ok": True,
+            "exists": True,
+            "size": REF_IMAGE_PATH.stat().st_size,
+            "width": w,
+            "height": h,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": True, "exists": True, "broken": str(exc)}
+
+
+def ref_image_save(b64_data: str) -> dict:
+    """把前端传来的 base64 图片解码存成参考图。
+
+    只接受 PNG/JPEG、≤8MB、能过 PIL 校验的图；存之前先备份旧图。
+    """
+    import base64
+    import binascii
+
+    raw = b64_data or ""
+    if "," in raw and raw.lstrip().lower().startswith("data:"):
+        raw = raw.split(",", 1)[1]
+    try:
+        blob = base64.b64decode(raw, validate=True)
+    except (binascii.Error, ValueError):
+        return {"ok": False, "error": "图片数据不是合法的 base64"}
+    if not blob:
+        return {"ok": False, "error": "图片是空的"}
+    if len(blob) > 8 * 1024 * 1024:
+        return {"ok": False, "error": "图片超过 8MB，换张小一点的"}
+
+    # 格式与完整性校验：顺带归一化成 PNG（插件上传 edits 端点时
+    # 不关心格式，统一 PNG 最稳）
+    import io
+
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(blob)) as im:
+            im.load()
+            fmt = (im.format or "").upper()
+            if fmt not in ("PNG", "JPEG", "WEBP"):
+                return {"ok": False, "error": f"只支持 PNG/JPEG/WebP，收到 {fmt or '未知格式'}"}
+            converted = io.BytesIO()
+            im.convert("RGB").save(converted, format="PNG")
+            payload = converted.getvalue()
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"图片解析失败：{exc}"}
+
+    REF_IMAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if REF_IMAGE_PATH.is_file():
+        backup = REF_IMAGE_PATH.with_suffix(".bak.png")
+        try:
+            backup.write_bytes(REF_IMAGE_PATH.read_bytes())
+        except OSError:
+            pass  # 备份失败不阻塞新图上传
+    REF_IMAGE_PATH.write_bytes(payload)
+    info(f"[launcher] 参考图已更新（{len(payload) // 1024}KB）")
+    return ref_image_status()
+
+
+def ref_image_clear() -> dict:
+    """删掉参考图（角色形象回退为纯文本描述模式）。"""
+    if REF_IMAGE_PATH.is_file():
+        try:
+            REF_IMAGE_PATH.unlink()
+        except OSError as exc:
+            return {"ok": False, "error": f"删除失败：{exc}"}
+    return {"ok": True, "exists": False}
+
+
 def docs_test_conn(client_id: str, access_token: str, open_id: str) -> dict:
     """拿三件套真打一次官方接口，验证凭证是否有效。
 
@@ -847,7 +1064,6 @@ def docs_test_conn(client_id: str, access_token: str, open_id: str) -> dict:
     return {"ok": True, "count": len(files), "names": names}
 
 
-
 # ---------------------------------------------------------------- NapCat
 
 
@@ -856,8 +1072,13 @@ def looks_like_napcat(path: Path) -> bool:
     if not path.is_dir():
         return False
     has_runtime = (path / "napcat" / "napcat.mjs").exists() or (path / "napcat.mjs").exists()
-    has_launcher = (path / "napcat.bat").exists() or (path / "node.exe").exists()
-    return has_runtime and has_launcher
+    if not has_runtime:
+        return False
+    if os.name == "nt":
+        return (path / "napcat.bat").exists() or (path / "node.exe").exists()
+    # macOS：NapCat 跑在 QQ.app 里，目录里没有 napcat.bat / node.exe，
+    # 用「有配置目录或 package.json」作为标志（实测容器目录里两者都有）
+    return (path / "config").is_dir() or (path / "package.json").exists()
 
 
 def napcat_config_dir(napcat_dir: Path) -> Path:
@@ -878,9 +1099,16 @@ def find_napcat() -> Path | None:
         ROOT.parent / "NapCat",
         ROOT.parent / "napcat",
         Path.home() / "NapCat",
-        Path("C:/NapCat"),
-        Path("D:/NapCat"),
     ]
+    if sys.platform == "darwin":
+        # macOS 上 NapCat 随 QQ.app 安装，本体在 QQ 的沙盒容器里
+        candidates += [
+            Path.home()
+            / "Library/Containers/com.tencent.qq/Data/Documents/napcat",
+            Path.home() / "Library/Containers/com.tencent.QQ/Data/Documents/napcat",
+        ]
+    else:
+        candidates += [Path("C:/NapCat"), Path("D:/NapCat")]
     env_hint = os.environ.get("NAPCAT_DIR")
     if env_hint:
         candidates.insert(0, Path(env_hint))
@@ -954,7 +1182,14 @@ def _download(url: str, dest: Path, on_progress=None) -> None:
 
 
 def write_napcat_config(napcat_dir: Path, env: dict, qq: str = "") -> str:
-    """写入 onebot11.json（反向 WS）与 webui.json，返回 WebUI 地址。"""
+    """写入 onebot11.json（反向 WS）与 webui.json，返回 WebUI 地址。
+
+    macOS 特殊处理：QQ 容器里的配置是装 NapCat 时就调好的（反向 WS 直指
+    本机器人），账号级 onebot11_<QQ>.json 优先级高于通用 onebot11.json，
+    覆盖它们只会把能跑的对接弄坏。所以这里只在「一份 onebot11 配置都
+    没有」时才写通用配置；webui.json 只补 autoLoginAccount，其余字段
+    （token/端口）原样保留 —— 换 token 会让网页里保存的登录失效。
+    """
     token = env.get("ONEBOT_ACCESS_TOKEN", "")
     port = env.get("PORT", str(PORT_NONEBOT))
     conf_dir = napcat_config_dir(napcat_dir)
@@ -986,7 +1221,17 @@ def write_napcat_config(napcat_dir: Path, env: dict, qq: str = "") -> str:
         "parseMultMsg": False,
     }
 
+    onebot_path = conf_dir / "onebot11.json"
+    if sys.platform == "darwin" and any(conf_dir.glob("onebot11*.json")):
+        pass  # 已有配置（含账号级），一律不碰
+    else:
+        onebot_path.write_text(
+            json.dumps(onebot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+
     webui_path = conf_dir / "webui.json"
+    global WEBUI_CONFIG_FILE
+    WEBUI_CONFIG_FILE = webui_path
     if webui_path.exists():
         try:
             webui = json.loads(webui_path.read_text(encoding="utf-8"))
@@ -1002,9 +1247,6 @@ def write_napcat_config(napcat_dir: Path, env: dict, qq: str = "") -> str:
     if qq.isdigit():
         webui["autoLoginAccount"] = qq
 
-    (conf_dir / "onebot11.json").write_text(
-        json.dumps(onebot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
     webui_path.write_text(
         json.dumps(webui, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
@@ -1023,6 +1265,14 @@ def write_napcat_config(napcat_dir: Path, env: dict, qq: str = "") -> str:
 #                  initializing / ready / offline / reconnecting
 
 QR_POLL_TIMEOUT = 8
+# NapCat 的 webui.json 路径（write_napcat_config 时记录）。
+# QR 轮询每次现读它拿 token：NapCat 重启/重登录后可能换 token，
+# 用启动时缓存的值会一直「token is invalid」，看起来还像限流。
+WEBUI_CONFIG_FILE: Path | None = None
+# 换凭据失败后的冷却秒数。页面 2 秒一拍地轮询，而 NapCat WebUI 的登录
+# 接口有次数限流（webui.json 的 loginRate），跟着硬打会把它打死，谁都恢复不了。
+_CRED_BACKOFF = 25.0
+_cred_backoff_until = 0.0
 
 
 def _napcat_webui_post(path: str, payload: dict, credential: str = "") -> tuple[dict | None, str]:
@@ -1063,11 +1313,43 @@ def napcat_webui_credential(token: str) -> str:
     return cred if isinstance(cred, str) else ""
 
 
+def _webui_token() -> str:
+    """拿 NapCat 当前运行时的 WebUI token。
+
+    优先从它的启动日志里取——面板地址带着真实 token 打进 stdout
+    （launchd 接进 logs/napcat.log），而这版 NapCat 会无视 webui.json
+    里的 token 用自己存储的那份，光读配置文件会一直「token is invalid」。
+    日志里没有再退回 webui.json / STATE。
+    """
+    try:
+        text = (ROOT / "logs" / "napcat.log").read_text(
+            encoding="utf-8", errors="replace"
+        )[-400_000:]
+        hits = re.findall(r"WebUi Token: (\S+)|webui\?token=(\S+)", text)
+        if hits:
+            token = hits[-1][0] or hits[-1][1]
+            if token:
+                return token
+    except Exception:  # noqa: BLE001
+        pass
+    if WEBUI_CONFIG_FILE is not None:
+        try:
+            data = json.loads(WEBUI_CONFIG_FILE.read_text(encoding="utf-8"))
+            token = (data or {}).get("token") or ""
+            if token:
+                return str(token)
+        except Exception:  # noqa: BLE001
+            pass
+    with STATE_LOCK:
+        return STATE.get("token", "")
+
+
 def qr_login_status() -> dict:
     """网页轮询入口：返回登录状态 + 当前二维码 URL（凭据过期自动重登一次）。"""
+    global _cred_backoff_until
     with STATE_LOCK:
-        token = STATE.get("token", "")
         cred = STATE.get("cred", "")
+    token = _webui_token()
     if not token:
         return {"ok": False, "error": "NapCat 还没启动完成"}
 
@@ -1078,12 +1360,29 @@ def qr_login_status() -> dict:
             return None, str(body.get("message") or "NapCat 返回了错误")
         return body, err
 
-    body, err = _status(cred)
-    if body is None:
-        # 凭据可能过期（NapCat 重启后 JWT 失效），重新换一次再试
+    if not cred:
+        # 没有凭据要先登录换一个；冷却期内直接放弃这一拍
+        if time.time() < _cred_backoff_until:
+            return {"ok": False, "error": "NapCat 管理页暂时不可用，稍等自动重试"}
         cred = napcat_webui_credential(token)
         if not cred:
+            _cred_backoff_until = time.time() + _CRED_BACKOFF
+            return {"ok": False, "error": "NapCat 管理页认证失败（token 不同步）——点客户端「重启机器人服务」可重置"}
+        _cred_backoff_until = 0.0
+
+    body, err = _status(cred)
+    if body is None:
+        # 凭据可能过期（NapCat 重启后 JWT 失效），重新换一次再试；
+        # 换不到就冷却一阵，别让页面的轮询节奏把 NapCat 的登录限流打死
+        if time.time() < _cred_backoff_until:
+            return {"ok": False, "error": err or "NapCat 暂时没有响应"}
+        cred = napcat_webui_credential(token)
+        if not cred:
+            _cred_backoff_until = time.time() + _CRED_BACKOFF
+            with STATE_LOCK:
+                STATE["cred"] = ""
             return {"ok": False, "error": "连不上 NapCat，稍等几秒再试"}
+        _cred_backoff_until = 0.0
         body, err = _status(cred)
         if body is None:
             return {"ok": False, "error": err or "NapCat 暂时没有响应"}
@@ -1104,15 +1403,15 @@ def qr_login_status() -> dict:
 
 def qr_refresh() -> dict:
     """强制刷新二维码。"""
+    token = _webui_token()
     with STATE_LOCK:
-        token = STATE.get("token", "")
         cred = STATE.get("cred", "")
     if not token:
         return {"ok": False, "error": "NapCat 还没启动完成"}
     if not cred:
         cred = napcat_webui_credential(token)
         if not cred:
-            return {"ok": False, "error": "连不上 NapCat，稍等几秒再试"}
+            return {"ok": False, "error": "NapCat 管理页认证失败——点客户端「重启机器人服务」可重置"}
     body, err = _napcat_webui_post("/api/QQLogin/RefreshQRcode", {}, cred)
     if body is None:
         return {"ok": False, "error": err or "刷新失败"}
@@ -1157,10 +1456,16 @@ def console_tail() -> dict:
 
 
 def _webview_available(py: Path) -> bool:
-    """检查 venv 里能不能 import webview。"""
+    """检查 venv 里能不能 import webview。
+
+    Windows 上光 import webview 不够——edgechromium 后端还依赖 pythonnet
+    （import clr），两者齐了才真的开得了窗口；只测 webview 会把
+    「装了核心没装后端」的半个状态误判成可用，最后在启动器里才炸。
+    """
     try:
+        code = "import webview, clr" if os.name == "nt" else "import webview"
         probe = subprocess.run(
-            [str(py), "-c", "import webview"],
+            [str(py), "-c", code],
             capture_output=True, timeout=60,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
@@ -1173,9 +1478,30 @@ def run_app_window(port: int) -> int:
     """用 pywebview 开原生窗口加载网页（阻塞到窗口关闭）。"""
     url = f"http://127.0.0.1:{port}/"
     ico = ROOT / "launcher.ico"
+    # macOS 的 Dock 图标走 webview.start(icon=) 参数（cocoa 后端会在
+    # NSApplication 就绪后自己调 setApplicationIconImage_，手动提前设置会被
+    # 应用初始化盖掉）。注意 icon 是 start() 的参数而不是 create_window 的；
+    # pywebview 文档说「仅 GTK/QT」是过时的，macOS 一样生效；
+    # Windows 的 WinForms 后端忽略该参数，那边由 _set_icon 负责。
+    icon_png = ROOT / "assets" / "client_icon.png"
+    icon_kw = {"icon": str(icon_png)} if icon_png.exists() else {}
 
     class _WindowBridge:
         """暴露给网页的自定义标题栏按钮：最小化 / 最大化 / 关闭。"""
+
+        def open_webui(self) -> bool:
+            """在系统默认浏览器里打开 NapCat 管理页。
+
+            pywebview 会吞掉网页里的 window.open / target=_blank（点了
+            没反应的元凶），所以「跳外部」统一走 Python 侧的 webbrowser。
+            token 现取——NapCat 重启换 token 后旧链接照样能用。
+            """
+            import webbrowser  # noqa: PLC0415
+
+            webbrowser.open(
+                f"http://127.0.0.1:{PORT_NAPCAT_WEBUI}/webui?token={_webui_token()}"
+            )
+            return True
 
         @staticmethod
         def _post_to_ui(native, fn) -> bool:
@@ -1201,7 +1527,22 @@ def run_app_window(port: int) -> int:
             except Exception:  # noqa: BLE001
                 return None
 
+        @staticmethod
+        def _cocoa_window():
+            """macOS 的 NSWindow（cocoa 后端把它挂在 window.native 上）。"""
+            native = _WindowBridge._get_native()
+            return native if native is not None else None
+
         def minimize(self) -> None:
+            if os.name != "nt":
+                # macOS：js_api 在后台线程，AppKit 必须回主线程调；
+                # performMiniaturize: 是 NSWindow 现成 selector，直接投主线程
+                native = self._cocoa_window()
+                if native is not None:
+                    native.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "performMiniaturize:", None, False
+                    )
+                return
             import clr  # noqa: PLC0415
 
             clr.AddReference("System.Windows.Forms")
@@ -1217,6 +1558,15 @@ def run_app_window(port: int) -> int:
             self._post_to_ui(native, _do)
 
         def toggle_maximize(self) -> None:
+            if os.name != "nt":
+                # macOS 没有传统「最大化」，绿点语义是 zoom（放大/还原），
+                # performZoom: 自带 toggle 行为
+                native = self._cocoa_window()
+                if native is not None:
+                    native.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "performZoom:", None, False
+                    )
+                return
             import clr  # noqa: PLC0415
 
             clr.AddReference("System.Windows.Forms")
@@ -1314,7 +1664,7 @@ def run_app_window(port: int) -> int:
                 time.sleep(0.5)
 
     try:
-        webview.start(_set_icon)
+        webview.start(_set_icon, **icon_kw)
     except Exception as exc:  # noqa: BLE001
         warn(f"内嵌窗口启动失败（{exc}），退回浏览器模式")
         try:
@@ -1342,10 +1692,11 @@ def free_port(start: int) -> int:
 def spawn(title: str, cmd: list[str], cwd: Path, extra_env: dict | None = None) -> subprocess.Popen:
     """启动一个服务进程。
 
-    终端模式：新开控制台窗口（和现在一样，日志在各自窗口里）。
-    窗口模式（APP_MODE）：不弹窗口，输出重定向到 logs/*.log，
-    网页里的「运行日志」面板会实时读取这些文件；这样关掉启动器窗口
-    机器人也照常运行。
+    终端模式（Windows）：新开控制台窗口，日志在各自窗口里。
+    窗口模式（Windows APP_MODE）/ macOS：不弹窗口，输出重定向到
+    logs/*.log，网页里的「运行日志」面板会实时读取这些文件；
+    macOS 额外用 start_new_session 让服务脱离终端会话 —— 关掉
+    Terminal（或启动器被会话清理）机器人也照常运行。
     """
     env = os.environ.copy()
     if extra_env:
@@ -1362,6 +1713,16 @@ def spawn(title: str, cmd: list[str], cwd: Path, extra_env: dict | None = None) 
             kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
         else:
             kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE
+    elif sys.platform == "darwin":
+        LOG_DIR.mkdir(exist_ok=True)
+        # macOS：loguru 自己在写 logs/bot.log（网页日志面板读它），
+        # 启动器只接管 stdout，写 .out.log，避免同一份日志混写两遍
+        name = "napcat" if "NapCat" in title else "bot"
+        handle = (LOG_DIR / f"{name}.out.log").open("ab")
+        _LOG_HANDLES.append(handle)
+        kwargs["stdout"] = handle
+        kwargs["stderr"] = subprocess.STDOUT
+        kwargs["start_new_session"] = True
     proc = subprocess.Popen(cmd, **kwargs)
     ok(f"已启动「{c(C.light)}{title}{c(C.reset)}」（PID {c(C.gray)}{proc.pid}{c(C.reset)}）")
     return proc
@@ -1561,17 +1922,20 @@ def run_pipeline(py: Path, form: dict, skip_napcat: bool = False) -> None:
         # ---- 3. 启动机器人核心
         _set(step=2, text="正在启动机器人核心 …")
         port = int(env.get("PORT", PORT_NONEBOT) or PORT_NONEBOT)
-        if port_in_use(port):
-            _push_log(f"端口 {port} 已被占用，可能已经有一个机器人在跑")
-
-        no_proxy = {"NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"}
-        spawn("机器人核心", [str(py), "bot.py"], ROOT, no_proxy)
-
-        _set(text=f"等待机器人核心就绪（127.0.0.1:{port}）…")
-        if wait_port(port, 30):
-            _push_log(f"机器人核心已监听 127.0.0.1:{port}")
+        core_already = port_in_use(port)
+        if core_already:
+            # macOS 场景常见：机器人是常驻的，重新跑一遍启动器
+            # 只是改配置，不该再叠一个核心进程去抢端口
+            _push_log(f"端口 {port} 已有机器人在运行，本次不重复启动核心")
         else:
-            _push_log("没等到机器人核心起来，看它的窗口里有没有报错")
+            no_proxy = {"NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"}
+            spawn("机器人核心", [str(py), "bot.py"], ROOT, no_proxy)
+
+            _set(text=f"等待机器人核心就绪（127.0.0.1:{port}）…")
+            if wait_port(port, 30):
+                _push_log(f"机器人核心已监听 127.0.0.1:{port}")
+            else:
+                _push_log("没等到机器人核心起来，看它的窗口里有没有报错")
 
         # ---- 4. 启动 NapCat
         if napcat_dir is None:
@@ -1589,12 +1953,30 @@ def run_pipeline(py: Path, form: dict, skip_napcat: bool = False) -> None:
             return
 
         _set(step=3, text="正在启动 NapCat 协议端 …")
-        launcher = napcat_dir / "napcat.bat"
-        if launcher.exists():
-            cmd = ["cmd", "/c", str(launcher)]
+        napcat_was_running = False
+        if port_in_use(PORT_NAPCAT_WEBUI):
+            # 已经跑着的 NapCat（比如 launchd 守护的那份）绝不能再拉一个：
+            # NapCatStarter 是直接 exec QQ，QQ 叠开第二个实例会把
+            # 登录好的会话顶掉。直接复用它的网页控制台。
+            napcat_was_running = True
+            _push_log("NapCat 已在运行，跳过拉起，直接复用它的网页控制台")
+        elif sys.platform == "darwin":
+            # macOS：NapCat 跑在 QQ.app 里，用 open 拉起；
+            # 项目里若有 NapCatStarter.app（带快速登录参数）优先用它，
+            # 能省掉扫码；NapCat 起来后反向 WS 会自动连回机器人核心
+            starter = ROOT / "scripts" / "NapCatStarter.app"
+            if starter.exists():
+                subprocess.run(["open", str(starter)], check=False)
+            else:
+                subprocess.run(["open", "-a", "QQ.app"], check=False)
+            ok("已通过 QQ.app 拉起 NapCat")
         else:
-            cmd = [str(napcat_dir / "node.exe"), "index.js"]
-        spawn("NapCat 协议端", cmd, napcat_dir)
+            launcher = napcat_dir / "napcat.bat"
+            if launcher.exists():
+                cmd = ["cmd", "/c", str(launcher)]
+            else:
+                cmd = [str(napcat_dir / "node.exe"), "index.js"]
+            spawn("NapCat 协议端", cmd, napcat_dir)
 
         _set(text="等待 NapCat 的网页控制台就绪…")
         if wait_port(PORT_NAPCAT_WEBUI, 60):
@@ -1609,7 +1991,11 @@ def run_pipeline(py: Path, form: dict, skip_napcat: bool = False) -> None:
             webui=webui,
             token=webui.split("token=")[-1] if "token=" in webui else "",
             cred="",
-            message="用手机 QQ 扫描下面的二维码登录；登录完成后机器人就上线了。",
+            message=(
+                "NapCat 本来就在运行：它已登录的话机器人现在就在线，不用扫码。"
+                if napcat_was_running
+                else "用手机 QQ 扫描下面的二维码登录；登录完成后机器人就上线了。"
+            ),
         )
 
     except Exception as exc:  # noqa: BLE001
@@ -1621,6 +2007,84 @@ def run_pipeline(py: Path, form: dict, skip_napcat: bool = False) -> None:
 
 
 # ---------------------------------------------------------------- HTTP
+
+# ---- 服务控制（macOS：把动作转成 launchctl 指令，客户端即控制台）----
+# bot.py 与 NapCat 由 LaunchAgent 守护（cn.jipril.nonebot / cn.jipril.napcat，
+# 见 ~/Library/LaunchAgents/）。这里暴露状态/重启/停止三个接口给配置页，
+# 「重启机器人」不再需要动终端或手杀进程。
+LAUNCHD_AGENTS = ("cn.jipril.nonebot", "cn.jipril.napcat")
+
+
+def _launchctl(*args: str) -> tuple[int, str]:
+    """跑一条 launchctl，返回 (返回码, 输出)。"""
+    try:
+        r = subprocess.run(
+            ["launchctl", *args], capture_output=True, text=True, timeout=30
+        )
+        return r.returncode, (r.stdout + r.stderr).strip()
+    except Exception as exc:  # noqa: BLE001
+        return 1, repr(exc)
+
+
+def _agent_loaded(label: str) -> bool:
+    rc, _ = _launchctl("print", f"gui/{os.getuid()}/{label}")
+    return rc == 0
+
+
+def services_status() -> dict:
+    """三个维度：两个 launchd agent 是否在跑 + 消息通道（18080）是否连通。
+
+    WS 显示已连接但 QQ 会话可能仍掉线（通道和登录是两层），界面上
+    「通道未连接」是掉线的必要非充分条件，最终以 NapCat 日志为准。
+    """
+    if sys.platform != "darwin":
+        return {
+            "ok": True,
+            "platform": "other",
+            "note": "服务控制仅 macOS（launchd）；Windows 直接关掉各服务的窗口即可",
+        }
+    agents = {}
+    for label in LAUNCHD_AGENTS:
+        rc, text = _launchctl("print", f"gui/{os.getuid()}/{label}")
+        agents[label] = {
+            "installed": rc == 0,
+            "running": rc == 0 and "state = running" in text,
+        }
+    env = read_env()
+    port = str(env.get("PORT") or "8080")
+    ws = False
+    try:
+        r = subprocess.run(
+            ["lsof", "-nP", f"-iTCP:{port}"], capture_output=True, text=True, timeout=5
+        )
+        ws = "ESTABLISHED" in (r.stdout or "")
+    except Exception:  # noqa: BLE001
+        pass
+    return {"ok": True, "platform": "darwin", "agents": agents, "ws_connected": ws, "bot_port": port}
+
+
+def services_control(action: str) -> dict:
+    """restart = kickstart -k（没加载过就先 bootstrap）；stop = bootout。"""
+    if sys.platform != "darwin":
+        return {"ok": False, "error": "服务控制仅 macOS（launchd）"}
+    uid_target = f"gui/{os.getuid()}"
+    results = {}
+    for label in LAUNCHD_AGENTS:
+        guid = f"{uid_target}/{label}"
+        plist = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+        if action == "restart":
+            rc, text = _launchctl("kickstart", "-k", guid)
+            if rc != 0 and not _agent_loaded(label) and plist.exists():
+                rc, text = _launchctl("bootstrap", uid_target, str(plist))
+        elif action == "stop":
+            rc, text = _launchctl("bootout", guid)
+            if rc != 0 and not _agent_loaded(label):
+                rc, text = 0, ""   # 本来就没加载，视为成功
+        else:
+            return {"ok": False, "error": f"未知动作 {action!r}"}
+        results[label] = {"rc": rc, "msg": text[:160]}
+    ok = all(v["rc"] == 0 for v in results.values())
+    return {"ok": ok, "action": action, "results": results}
 
 
 class WebHandler(BaseHTTPRequestHandler):
@@ -1701,6 +2165,10 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?")[0]
+        if path == "/api/services/status":
+            self._json(services_status())
+            return
+
         if path == "/api/progress":
             with STATE_LOCK:
                 self._json(dict(STATE))
@@ -1724,6 +2192,44 @@ class WebHandler(BaseHTTPRequestHandler):
                 "ok": True,
                 "values": {k: env.get(k, "") for k in DOCS_ENV_KEYS},
             })
+            return
+
+        if path == "/api/config":
+            # 表单预填：把 .env 里已有的配置回给页面，打开就是填好的。
+            # 仅 127.0.0.1 可见，凭证本来就存在这台机器上（与 tdocs 面板同款做法）。
+            env = read_env()
+            self._json({
+                "ok": True,
+                "values": {
+                    "qq": env.get("BOT_QQ", ""),
+                    "botname": env.get("AI_BOT_NAME", ""),
+                    "base": env.get("AI_API_BASE", ""),
+                    "model": env.get("AI_MODEL", ""),
+                    "key": env.get("AI_API_KEY", ""),
+                    "persona": env.get("AI_SYSTEM_PROMPT", ""),
+                },
+            })
+            return
+
+        if path == "/api/imagegen":
+            env = read_env()
+            self._json({
+                "ok": True,
+                "values": {k: env.get(k, "") for k in IMAGEGEN_ENV_KEYS},
+                "ref": ref_image_status(),
+            })
+            return
+
+        if path == "/api/imagegen/ref":
+            # 参考图预览：浏览器 <img> 直接加载这个地址
+            if not REF_IMAGE_PATH.is_file():
+                body = b""
+                self.send_response(404)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                return
+            self._send_file(REF_IMAGE_PATH, "image/png")
             return
 
         if path in ("/", "/index.html"):
@@ -1751,6 +2257,19 @@ class WebHandler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         form = self._read_json()
 
+        if path == "/api/qr/refresh":
+            # 页面的「刷新二维码」按钮发的是 POST（GET 也有同款路由兜底）
+            self._json(qr_refresh())
+            return
+
+        if path == "/api/services/restart":
+            self._json(services_control("restart"))
+            return
+
+        if path == "/api/services/stop":
+            self._json(services_control("stop"))
+            return
+
         if path == "/api/test":
             self._json(
                 test_model(form.get("base", ""), form.get("key", ""), form.get("model", ""))
@@ -1763,6 +2282,28 @@ class WebHandler(BaseHTTPRequestHandler):
                 "ok": True,
                 "note": "已写入 .env；机器人正在运行的话，重启后生效",
             })
+            return
+
+        if path == "/api/imagegen":
+            # 只有真给了 Key 才允许开开关；没 Key 保存时强制关，
+            # 避免「开着生图但没配 Key」每次触发都白跑一趟。
+            key = str(form.get("AI_IMAGEGEN_API_KEY") or "").strip()
+            if not key:
+                form["AI_IMAGEGEN_ENABLED"] = "false"
+            updates = save_imagegen_env(form)
+            self._json({
+                "ok": True,
+                "values": updates,
+                "note": "已写入 .env；机器人正在运行的话，重启后生效",
+            })
+            return
+
+        if path == "/api/imagegen/ref":
+            self._json(ref_image_save(str(form.get("image") or "")))
+            return
+
+        if path == "/api/imagegen/ref/clear":
+            self._json(ref_image_clear())
             return
 
         if path == "/api/tdocs/test":
@@ -1891,9 +2432,9 @@ def configure_env_cli() -> dict:
         "botname": ask("机器人名字", env.get("AI_BOT_NAME", "") or "小助手"),
         "base": ask(
             "接口地址 Base URL",
-            env.get("AI_API_BASE") or "https://api.xiaomimimo.com/v1",
+            env.get("AI_API_BASE") or "https://api.deepseek.com/v1",
         ),
-        "model": ask("模型名称", env.get("AI_MODEL") or "mimo-v2.6-flash"),
+        "model": ask("模型名称", env.get("AI_MODEL") or "deepseek-chat"),
         "key": ask("API Key", env.get("AI_API_KEY", "")),
         "persona": ask("人设（一句话也行）", DEFAULT_PERSONA),
         "vendor": "cli",
@@ -2067,11 +2608,19 @@ def main() -> int:
         return rc
 
     if not FROZEN and not args.no_app and not args.check_only:
-        pyw = py.with_name("pythonw.exe")
-        if _webview_available(py) and pyw.exists():
+        # 窗口模式的门槛按平台区分：Windows 要 pythonw.exe（无控制台弹窗），
+        # macOS 没有 pythonw——只要 venv 里 webview 可导入就直接开窗口。
+        # 旧写法无条件要求 pythonw.exists()，导致 macOS 永远退回浏览器模式。
+        if os.name == "nt":
+            pyw = py.with_name("pythonw.exe")
+            window_py = str(pyw) if pyw.exists() else None
+        else:
+            pyw = None
+            window_py = str(py)
+        if window_py and _webview_available(py):
             hint("准备打开内嵌窗口…")
             subprocess.Popen(
-                [str(pyw), str(Path(__file__).resolve()),
+                [window_py, str(Path(__file__).resolve()),
                  "--app-child", "--web-port", str(port)],
                 cwd=str(ROOT),
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
