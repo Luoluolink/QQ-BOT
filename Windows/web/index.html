@@ -1233,7 +1233,8 @@ function startProgressPoll(){
       const list = p.steps || STEPS;
       renderSteps(list, list.length);
       $("#doneTitle").textContent = "启动成功";
-      $("#doneSub").textContent = p.message ||
+      /* message 为空（比如 NapCat 本来就在跑，没什么可啰嗦的）就显示当前状态文案 */
+      $("#doneSub").textContent = p.message || p.text ||
         "用手机 QQ 扫描下面的二维码登录；登录完成后机器人就上线了。";
       if(p.webui){
         showStatus("ok",

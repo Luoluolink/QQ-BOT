@@ -1991,8 +1991,10 @@ def run_pipeline(py: Path, form: dict, skip_napcat: bool = False) -> None:
             webui=webui,
             token=webui.split("token=")[-1] if "token=" in webui else "",
             cred="",
+            # NapCat 本来就在运行时不啰嗦——页面回落到 text（全部就绪），
+            # 状态从步骤列表一看便知，不需要一句解释性文案
             message=(
-                "NapCat 本来就在运行：它已登录的话机器人现在就在线，不用扫码。"
+                ""
                 if napcat_was_running
                 else "用手机 QQ 扫描下面的二维码登录；登录完成后机器人就上线了。"
             ),
