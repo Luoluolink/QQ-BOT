@@ -11,8 +11,6 @@ from typing import Optional
 from nonebot.adapters import Event
 from nonebot.adapters.onebot.v11 import Message
 
-from . import members
-
 
 def reply_message_id(event: Event) -> Optional[int]:
     """取被引用（回复）消息的 message_id；当前消息不是回复就返回 None。
@@ -54,9 +52,14 @@ def reply_quote_text(event: Event, max_len: int = 150) -> str:
         return ""
     sender = getattr(reply, "sender", None)
     user_id = getattr(sender, "user_id", None) if sender else None
-    name = (
-        getattr(sender, "card", "") or getattr(sender, "nickname", "") or ""
-    ).strip() or (f"QQ{user_id}" if user_id else "某人")
+    if user_id:
+        name = speaker_tag(
+            getattr(sender, "card", "") or "",
+            getattr(sender, "nickname", "") or "",
+            user_id,
+        )
+    else:
+        name = "某人"
 
     msg = getattr(reply, "message", None)
     text = ""
@@ -85,6 +88,9 @@ def target_user_id(event: Event, args: Message, self_id: int) -> Optional[int]:
 
     这样 /戳 @某人、/戳（回复某人消息）两种用法都行。
     """
+    # 函数内导入：tools 被 members 反向依赖（speaker_tag），模块级会成环
+    from . import members  # noqa: PLC0415
+
     ats = members.extract_ats(args, self_id)
     if ats:
         return int(ats[0])
@@ -198,3 +204,16 @@ def at_me(event: Event, self_id: str | int) -> bool:
         seg.type == "at" and str(seg.data.get("qq", "")) == str(self_id)
         for seg in event.message
     )
+
+
+def speaker_tag(card: str, nickname: str, user_id) -> str:
+    """统一的说话人标记：名片 > 昵称，末尾恒定追加 QQ 号做唯一锚点。
+
+    为什么必须带号码：聊天历史靠【】标记区分谁说了什么，而
+    （1）群名片随时会改——同一个人今天叫张三明天叫李四，光用名字
+    模型就接不上了；（2）两个人的昵称可能撞车（都叫「无」/emoji 名），
+    模型把 A 的话安到 B 头上。名字后挂个永不变的号码，
+    改名不断档、重名不分家。
+    """
+    name = (card or nickname or "").strip()
+    return f"{name}({user_id})" if name else f"QQ{user_id}"

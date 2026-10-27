@@ -27,7 +27,7 @@ from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent
 from nonebot.rule import Rule
 
 from .config import Config
-from .tools import at_me
+from .tools import at_me, speaker_tag
 
 cfg = get_plugin_config(Config)
 
@@ -88,6 +88,8 @@ async def _handle_record(bot: Bot, event: GroupMessageEvent) -> None:
     if event.user_id == int(event.self_id):
         return
     sender = event.sender
-    name = (getattr(sender, "card", "") or getattr(sender, "nickname", "") or "").strip()
-    speaker = name or f"QQ{event.user_id}"
+    speaker = speaker_tag(
+        getattr(sender, "card", "") or "", getattr(sender, "nickname", "") or "",
+        event.user_id,
+    )
     record(event.group_id, speaker, event.get_plaintext())

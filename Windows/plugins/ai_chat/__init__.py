@@ -902,19 +902,18 @@ def _demote_image_content(history) -> None:
 
 
 def _speaker_label(event: GroupMessageEvent) -> str:
-    """取发言人的称呼：群名片优先，其次昵称，实在没有就报 QQ 号。
+    """取发言人的规范标记：名片/昵称 + 恒定 QQ 号锚点（见 tools.speaker_tag）。
 
     为什么要带发言人：聊天历史是整个群共用一份的。不给每句话标注是谁说的，
     模型就分不清「我喜欢小猫」是小a说的还是小b说的，问「我喜欢什么」时
-    就会把别人说过的话安到提问的人头上（张冠李戴）。
+    就会把别人说过的话安到提问的人头上（张冠李戴）。光有名字还不够——
+    名片会改、昵称会撞车，标记里带个不变的 QQ 号才稳。
     """
     sender = event.sender
-    name = (
-        (getattr(sender, "card", "") or getattr(sender, "nickname", "") or "")
-    ).strip()
-    if not name:
-        name = f"QQ{event.user_id}"
-    return name
+    return tools.speaker_tag(
+        getattr(sender, "card", "") or "", getattr(sender, "nickname", "") or "",
+        event.user_id,
+    )
 
 
 def _chat_rule(bot: Bot, event: Event) -> bool:

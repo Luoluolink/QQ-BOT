@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 from nonebot.adapters.onebot.v11 import Bot, Message
 from nonebot.log import logger
 
+from .tools import speaker_tag
+
 # 成员名单缓存时长（秒）。群成员变动不频繁，可以设长一点。
 # 代价是新人入群后最多半小时内认不出来，属可接受范围。
 CACHE_TTL = 1800
@@ -219,7 +221,9 @@ async def resolve_ats(bot: Bot, group_id: int, qqs: list[int]) -> dict[int, str]
     for qq in qqs:
         member = index.by_qq(qq)
         if member is not None:
-            names[qq] = member.display
+            # 带 QQ 锚点的规范名：和聊天历史的【发言人】标记同款格式，
+            # 模型才能把「@某人」和「某人说过的话」对上号
+            names[qq] = speaker_tag(member.card, member.nickname, qq)
 
     # 索引里没有的（比如刚入群还没刷新缓存）单独查
     missing = [qq for qq in qqs if qq not in names]
@@ -233,7 +237,7 @@ async def resolve_ats(bot: Bot, group_id: int, qqs: list[int]) -> dict[int, str]
             continue
         member = _to_member(raw if isinstance(raw, dict) else {})
         if member is not None:
-            names[qq] = member.display
+            names[qq] = speaker_tag(member.card, member.nickname, qq)
     return names
 
 
