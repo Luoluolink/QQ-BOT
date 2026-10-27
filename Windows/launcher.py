@@ -614,6 +614,35 @@ def ensure_deps(py: Path) -> None:
 # ---------------------------------------------------------------- .env 读写
 
 
+def _dotenv_unquote(value: str) -> str:
+    """还原 dotenv_quote 写出的双引号值：剥引号 + 转义还原。
+
+    写读必须对称：dotenv_quote 转义包装，这里原样还原。之前 read_env
+    不做还原，客户端预填拿到带引号转义的文本，再保存就再包一层——
+    人设被一层层套娃成斜杠山，python-dotenv 只剥一层，模型也会读到垃圾。
+    """
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        body = value[1:-1]
+        out: list[str] = []
+        i = 0
+        while i < len(body):
+            ch = body[i]
+            if ch == "\\" and i + 1 < len(body):
+                nxt = body[i + 1]
+                if nxt == "n":
+                    out.append("\n")
+                    i += 2
+                    continue
+                if nxt in ('"', "\\"):
+                    out.append(nxt)
+                    i += 2
+                    continue
+            out.append(ch)
+            i += 1
+        return "".join(out)
+    return value
+
+
 def read_env() -> dict:
     data: dict = {}
     if not ENV_FILE.exists():
@@ -623,7 +652,7 @@ def read_env() -> dict:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        data[key.strip()] = value.strip()
+        data[key.strip()] = _dotenv_unquote(value.strip())
     return data
 
 
