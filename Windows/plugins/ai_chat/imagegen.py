@@ -249,7 +249,7 @@ def _find_font() -> Path | None:
 
 
 def _add_text(image_bytes: bytes, phrase: str) -> bytes:
-    """把短语 P 到图上（顶部居中，深灰字 + 白描边），模仿原表情包的手写文字。
+    """把短语 P 到图上（顶部居中，吉普莉尔粉字 + 白描边），模仿原表情包的手写文字。
 
     任何一步失败（没字体、PIL 报错）都原样返回图——文字是锦上添花，
     不能为它把整张图赔进去。
@@ -257,7 +257,7 @@ def _add_text(image_bytes: bytes, phrase: str) -> bytes:
     if not phrase:
         return image_bytes
     try:
-        from PIL import Image, ImageDraw, ImageFont
+        from PIL import Image, ImageColor, ImageDraw, ImageFont
 
         font_path = _find_font()
         if font_path is None:
@@ -274,8 +274,11 @@ def _add_text(image_bytes: bytes, phrase: str) -> bytes:
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
         x = (w - tw) // 2
         y = int(h * 0.05)
-        # 白描边（8 向）+ 深灰主字：保证任何背景上都清晰
-        fill = (70, 65, 75)
+        try:
+            fill = ImageColor.getrgb(cfg.ai_imagegen_text_color)
+        except ValueError:
+            fill = (247, 143, 183)  # 颜色写错时退回吉普莉尔粉
+        # 白描边（8 向）+ 粉色主字：粉字在浅背景上靠白边撑出对比
         stroke = (255, 255, 255)
         for dx in (-3, 0, 3):
             for dy in (-3, 0, 3):

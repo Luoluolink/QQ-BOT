@@ -411,6 +411,9 @@ class Config(BaseModel):
     # 手写体字体文件路径（图上短语后处理用）。留空 = 自动找 fonts/ 目录下
     # 第一个 ttf/otf；找不到就跳过文字只发图（文字是锦上添花，不赔图进去）。
     ai_imagegen_font: str = ""
+    # 图上短语的颜色。默认吉普莉尔粉（配白描边，任何背景上都清晰），
+    # 想换写 hex 色值，如 AI_IMAGEGEN_TEXT_COLOR=#ff8fc7
+    ai_imagegen_text_color: str = "#f78fb7"
 
     # ---------- 相册内容索引 ----------
     # 存图时让识图模型生成一句话描述存进 data/album_index.json，
