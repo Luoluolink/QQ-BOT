@@ -457,8 +457,15 @@ button.ghost:disabled{opacity:.5;cursor:not-allowed}
   background:rgba(10,7,10,.96);border-bottom:1px solid rgba(217,167,186,.12);
   user-select:none;
 }
-body.in-app .titlebar{display:flex}
-body.in-app .stage{padding-top:76px}
+body.in-app .titlebar{
+  display:flex;position:relative;z-index:50;height:auto;
+  padding:12px 14px 0;background:transparent;border-bottom:none;
+}
+body.in-app .stage{padding-top:4px}
+/* 原生标题栏接管了窗口操作：自绘的标题/拖拽区/窗口按钮全部退场 */
+body.in-app .titlebar .tb-title,
+body.in-app .titlebar .tb-drag,
+body.in-app .titlebar .wbtns{display:none}
 .tb-title{
   font-size:12.5px;font-weight:600;color:#ffd9e0;letter-spacing:1px;
   padding:4px 8px;cursor:default;white-space:nowrap;
@@ -621,7 +628,7 @@ button.ghost:hover{box-shadow:inset 0 0 14px rgba(217,167,186,.14), 0 4px 18px -
 
   <!-- 左：品牌区（≥768px 显示；窄屏压缩成卡片上方一行） -->
   <aside class="brand">
-    <div class="mark"><img src="icon.png" alt="Logo"></div>
+    <div class="mark"><img src="icon.png?v=3" alt="Logo"></div>
     <div>
       <h1>QQ 群 AI 机器人</h1>
     </div>

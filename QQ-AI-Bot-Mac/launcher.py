@@ -1564,8 +1564,9 @@ def run_app_window(port: int) -> int:
 
         def minimize(self) -> None:
             if os.name != "nt":
-                # macOS：js_api 在后台线程，AppKit 必须回主线程调；
-                # performMiniaturize: 是 NSWindow 现成 selector，直接投主线程
+                # macOS：投递到主线程执行。waitUntilDone 必须为 False——
+                # js_api 调用在主线程上跑的话，True 会等自己 = 死锁，
+                # 表现就是整个窗口卡死、按钮一直转圈。
                 native = self._cocoa_window()
                 if native is not None:
                     native.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -1639,8 +1640,8 @@ def run_app_window(port: int) -> int:
         width=1120, height=800,
         min_size=(900, 640),
         background_color="#150e14",   # 和页面背景同色，避免加载瞬间闪白条
-        frameless=True,               # 无边框：标题栏由网页自己画（页签嵌进去）
-        easy_drag=False,              # 拖拽交给页面里的 .pywebview-drag-region
+        frameless=False,              # 原生标题栏：红绿灯按钮由系统提供，
+                                      # 稳定可靠且符合 Mac 习惯（自绘版会死锁）
         js_api=_WindowBridge(),
     )
 
