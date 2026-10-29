@@ -1670,11 +1670,26 @@ def run_app_window(port: int) -> int:
     )
 
     def _set_icon() -> None:
-        """窗口起来后把图标换成 launcher.ico（仅 Windows/WinForms 后端）。
+        """窗口起来后的外观收尾：Windows 换图标，macOS 融合深色标题栏。
 
-        两步走：Form.Icon 管标题栏，WM_SETICON 管任务栏；
-        pythonnet 引用 System.Drawing 必须先 AddReference，否则 import 静默失败。
+        macOS 浅色模式下原生标题栏是白的，压在深色页面上非常突兀——
+        把标题栏设为透明并隐藏标题文字，窗口的深色背景延伸到顶，
+        红绿灯悬浮在深色上（VS Code / Discord 同款处理）。
         """
+        if os.name == "darwin":
+            for _ in range(40):   # native 句柄要等窗口真正创建，重试几秒
+                native = getattr(window, "native", None)
+                if native is None:
+                    time.sleep(0.25)
+                    continue
+                # 启动函数本身在后台线程：AppKit 调用投主线程，投完即走不等待
+                native.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "setTitlebarAppearsTransparent:", True, False
+                )
+                native.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "setTitleVisibility:", 1, False   # NSWindowTitleHidden
+                )
+                return
         if os.name != "nt" or not ico.exists():
             return
         for _ in range(20):   # native 句柄要等窗口真正创建，重试几秒
