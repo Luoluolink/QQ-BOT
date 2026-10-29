@@ -18,6 +18,7 @@ from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message, Message
 from nonebot.params import CommandArg
 from nonebot.plugin import PluginMetadata
 
+from . import mood
 from .config import Config
 from .tools import args_text, resolve_emoji_id, reply_message_id, target_user_id, truncate
 
@@ -93,6 +94,9 @@ async def handle_poked(bot: Bot, event: NoticeEvent) -> None:
         return
     if target != int(event.self_id) or not group_id or not poker:
         return
+    if cfg.ai_mood_enabled:
+        # 被戳是身体接触级的互动，害羞是最自然的反应
+        mood.bump(group_id, "shy", 12, "被戳了")
 
     now = time.time()
     today = time.strftime("%Y-%m-%d")

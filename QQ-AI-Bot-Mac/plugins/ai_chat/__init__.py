@@ -20,13 +20,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import base64
 import random
 import re
 import time
 from collections import defaultdict, deque
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import DefaultDict, Deque, Dict
 
@@ -69,6 +70,7 @@ from . import (
     media,
     members,
     memory,
+    mood,
     music,
     proactive,
     resource_index,
@@ -1098,11 +1100,15 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
     # 联网时尤其明显：问「今天天气」，它会把日期算错一天。
     today = date.today()
     weekday = "一二三四五六日"[today.weekday()]
+    now_dt = datetime.now()
+    h = now_dt.hour
+    period = ("深夜" if h < 6 else "清晨" if h < 8 else "上午" if h < 12
+              else "中午" if h < 14 else "下午" if h < 18 else "晚上" if h < 23 else "深夜")
     messages: list[dict] = [
         {
             "role": "system",
-            "content": f"今天的日期是 {today.isoformat()}（星期{weekday}）。"
-            "涉及时间的问题一律以此为准。\n\n" + _persona_for(group_id),
+            "content": f"今天是 {today.isoformat()}（星期{weekday}），现在是 {now_dt.strftime('%H:%M')}（{period}）。"
+            "涉及时间的问题一律以此为准；深夜就困倦懒散，白天正常精神——语气跟着时段走。\n\n" + _persona_for(group_id),
         }
     ]
 
@@ -1139,6 +1145,12 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
                     f"今日累计 {websearch.rounds()} 轮"
                 )
 
+    # 情绪注入：当前心情影响语气。平静时没有这段，就是默认人设的状态。
+    if cfg.ai_mood_enabled:
+        mood_ctx = mood.describe(group_id)
+        if mood_ctx:
+            messages.append({"role": "system", "content": mood_ctx})
+
     # 长期记忆注入：/记住 存下的事实，按与本条消息的相关性挑出来给模型。
     # 放在检索结果之后、历史之前——记忆是「明确交代过的事」，优先级应高于闲聊历史。
     if cfg.ai_memory_enabled:
@@ -1171,6 +1183,12 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
     # 不然名字前缀会参与关键词匹配，反而引入噪音。
     speaker = _speaker_label(event)
     speaker_text = f"【{speaker}】{text}"
+
+    # 情绪触发：被夸/被怼/被道谢……规则匹配，便宜即时
+    if cfg.ai_mood_enabled:
+        mood.react_to_text(group_id, text)
+    # 自动记忆：顺手把这句话记进提取缓冲，攒够一批后台提炼
+    memory.note(group_id, speaker, text)
 
     user_content = await vision.build_content(
         bot,
@@ -1224,6 +1242,9 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
     _demote_image_content(_history[group_id])
     _history[group_id].append({"role": "user", "content": user_content})
     _history[group_id].append({"role": "assistant", "content": reply})
+
+    # 自动记忆：缓冲攒够一批就后台提炼一次，不阻塞这条回复
+    asyncio.create_task(memory.maybe_auto_extract(group_id))
 
     # @ 机器人的这条消息也是群聊内容，记进摘要流水（没 @ 的消息由
     # proactive 那边记，两边合起来就是完整的群聊记录）。
@@ -1946,6 +1967,16 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
     if quote:
         text = f"{quote}\n{text}" if text else quote
 
+    # 私聊情绪与自动记忆：键取负 user_id，和群聊的记忆库互不干扰
+    if cfg.ai_mood_enabled:
+        mood.react_to_text(-user_id, text)
+    user_label = tools.speaker_tag(
+        getattr(event.sender, "card", "") or "",
+        getattr(event.sender, "nickname", "") or "",
+        user_id,
+    )
+    memory.note(-user_id, user_label, text)
+
     images = (
         await vision.collect_images(bot, event, limit=cfg.ai_vision_max_images)
         if cfg.ai_vision_enabled
@@ -1959,13 +1990,26 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
 
     today = date.today()
     weekday = "一二三四五六日"[today.weekday()]
+    now_dt = datetime.now()
+    h = now_dt.hour
+    period = ("深夜" if h < 6 else "清晨" if h < 8 else "上午" if h < 12
+              else "中午" if h < 14 else "下午" if h < 18 else "晚上" if h < 23 else "深夜")
     messages: list[dict] = [
         {
             "role": "system",
-            "content": f"今天的日期是 {today.isoformat()}（星期{weekday}）。"
-            "涉及时间的问题一律以此为准。\n\n" + cfg.ai_system_prompt,
+            "content": f"今天是 {today.isoformat()}（星期{weekday}），现在是 {now_dt.strftime('%H:%M')}（{period}）。"
+            "这是私聊：一对一聊天，更放松更主动，不用等谁 @ 你，也读不到群里其他人的发言。\n\n"
+            + cfg.ai_system_prompt,
         }
     ]
+    if cfg.ai_mood_enabled:
+        mood_ctx = mood.describe(-user_id)
+        if mood_ctx:
+            messages.append({"role": "system", "content": mood_ctx})
+    if cfg.ai_memory_enabled:
+        mem_ctx = memory.describe(-user_id, text, cfg.ai_memory_max_results)
+        if mem_ctx:
+            messages.append({"role": "system", "content": mem_ctx})
     messages.extend(_private_history[user_id])
 
     # 联网检索（client 模式）：私聊没有群资源 context，但联网照常可用
@@ -2027,9 +2071,11 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
     _private_history[user_id].append({"role": "assistant", "content": reply})
     logger.info(f"[ai_chat] 私聊回复({len(reply)}字, {time.time() - _t0:.1f}s): {reply[:200]}")
 
+    asyncio.create_task(memory.maybe_auto_extract(-user_id))
+
     segments: list = []
-    if cfg.ai_reply_quote:
-        segments.append(MessageSegment.reply(event.message_id))
+    # 私聊不加引用：一对一聊天里每条都带「回复」块非常机器味，
+    # 引用只对群聊有意义（标明在接谁的话）。私聊直接说话。
     segments.append(MessageSegment.text(reply))
 
     sticker = await _maybe_sticker(bot, text, -event.user_id)

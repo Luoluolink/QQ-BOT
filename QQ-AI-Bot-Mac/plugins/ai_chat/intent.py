@@ -31,6 +31,7 @@ from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message
 
 from .ai_client import make_client
 from . import album_index, docsync, essence, linkarchive, memory, resource_index
+from .tools import speaker_tag
 from .config import Config
 
 cfg = get_plugin_config(Config)
@@ -81,6 +82,26 @@ def _action(name: str, desc: str, args_doc: str, admin: bool = False):
 
 
 # ================================================================ 执行器
+
+
+@_action(
+    "remember",
+    "把用户明确说出的一个事实、喜好或约定记进长期记忆：用户说「记住……」"
+    "「帮我记一下……」「你以后……」这类话时使用",
+    "fact（要记住的事实，整理成一句完整的第三人称陈述）",
+)
+async def _exec_remember(bot: Bot, event: GroupMessageEvent, args: dict, is_admin: bool) -> str | None:
+    fact = str(args.get("fact") or "").strip()
+    if not fact:
+        return "要记住什么呀？得给我个具体的事实"
+    sender = getattr(event, "sender", None)
+    by = speaker_tag(
+        getattr(sender, "card", "") or "", getattr(sender, "nickname", "") or "", event.user_id
+    )
+    result = memory.add(event.group_id, f"{by}：{fact}", by=by)
+    if result == "dup":
+        return "这条我已经记着了"
+    return f"记住了：{fact}"
 
 
 @_action(
