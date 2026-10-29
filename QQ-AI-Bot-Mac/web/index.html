@@ -1560,8 +1560,13 @@ $("#termPause").addEventListener("click", () => {
   termPaused = !termPaused;
   $("#termPause").textContent = termPaused ? "▶ 继续" : "⏸ 暂停";
 });
-$("#termClear").addEventListener("click", () => {
-  $("#termText").textContent = "（已清屏 —— 服务日志仍在 程序/logs/ 目录里）";
+$("#termClear").addEventListener("click", async () => {
+  /* 真清屏：让启动器记录日志位置，之后只推新增内容——
+     光清掉画面没用，下一秒轮询会把整个尾巴原样画回来 */
+  try{
+    await fetch("/api/console/clear", { method: "POST" });
+  }catch(err){ /* 启动器不在就只清本地画面 */ }
+  $("#termText").textContent = "（已清屏 —— 之后的新日志会实时出现在这里，完整日志在 程序/logs/ 目录）";
 });
 
 /* ---------------- 自定义标题栏（仅内嵌窗口） ---------------- */

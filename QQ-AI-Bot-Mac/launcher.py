@@ -1463,22 +1463,46 @@ LOG_DIR = ROOT / "logs"
 _LOG_HANDLES: list = []
 
 
-def console_tail() -> dict:
-    """读两个服务日志的末尾，拼给网页的「运行日志」面板。"""
+_LOG_OFFSETS: dict[str, int] = {}   # 清屏语义：记录各日志已读到的字节位置
+
+
+def console_tail(clear: bool = False) -> dict:
+    """读两个服务日志，拼给网页的「运行日志」面板。
+
+    清屏语义：记录清屏那一刻各日志的字节位置，之后只把这个位置之后的
+    新增内容推给页面——光清掉网页显示没用，轮询下一秒就会把整个
+    尾巴原样画回来。没清过屏（首次打开）照旧显示末尾 64KB 的历史。
+    """
     out: list[str] = []
     for label, name in (("核心", "bot.log"), ("NapCat", "napcat.log")):
         path = LOG_DIR / name
         if not path.exists():
             continue
+        key = str(path)
         try:
             with path.open("rb") as fh:
                 fh.seek(0, 2)
                 size = fh.tell()
-                fh.seek(max(0, size - 65536))   # 只读末尾 64KB，日志再大也不卡
+                offset = _LOG_OFFSETS.get(key)
+                if clear:
+                    _LOG_OFFSETS[key] = size
+                    continue
+                if offset is None:
+                    start = max(0, size - 65536)   # 首次：末尾 64KB 历史
+                else:
+                    start = offset
+                    if size < start:
+                        start = 0                   # 日志被截断/轮转，从头读
+                    if size - start > 262144:       # 积压太多也别一次灌爆页面
+                        start = size - 262144
+                fh.seek(start)
                 data = fh.read()
+                _LOG_OFFSETS[key] = size
             text = data.decode("utf-8", "replace")
             lines = [f"[{label}] {ln}" for ln in text.splitlines() if ln.strip()]
-            out.extend(lines[-160:])
+            if start > 0 and data and not data.endswith(b"\n"):
+                lines = lines[1:]   # 从中段起读时丢掉不完整的半行
+            out.extend(lines[-300:])
         except OSError:
             continue
     return {"ok": True, "lines": out[-300:]}
@@ -2288,6 +2312,10 @@ class WebHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         path = self.path.split("?")[0]
         form = self._read_json()
+
+        if path == "/api/console/clear":
+            self._json(console_tail(clear=True))
+            return
 
         if path == "/api/qr/refresh":
             # 页面的「刷新二维码」按钮发的是 POST（GET 也有同款路由兜底）
