@@ -20,9 +20,19 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+import re
+import time
+from collections import defaultdict, deque
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
+
+from nonebot import get_plugin_config, logger
+
+from .ai_client import chat_kwargs, make_client
+from .config import Config
+
+cfg = get_plugin_config(Config)
 
 # 项目根目录下的 data/（已在 .gitignore 里忽略，和 web_search_usage.json 同目录）
 _STATE_PATH = (
@@ -178,3 +188,84 @@ def describe(group_id: int, text: str, limit: int = 8) -> str:
         "【长期记忆】以下是之前明确要求记住的事实，回答相关问题时必须以它们为准，"
         "记忆里没有的就说不知道，绝不能编造或混淆：\n" + "\n".join(lines)
     )
+
+
+# ---------------------------------------------------------------- 自动记忆提取
+#
+# 「/记住」的入口被斜杠命令总闸关掉后，记忆必须自己长出来：
+# 群聊攒够一批就后台调一次模型，提炼「值得长期记住的事实」进同一个库。
+# 三重节流：条数门槛 + 冷却 + 每日上限——提取是锦上添花，不能变成账单刺客。
+
+_pending: dict[int, deque[str]] = defaultdict(lambda: deque(maxlen=16))
+_last_auto: dict[int, float] = {}
+_daily: dict[tuple[str, str], int] = {}
+_inflight: set[int] = set()
+
+
+def note(group_id: int, speaker: str, text: str) -> None:
+    """把一句群聊记进提取缓冲。由聊天回复流程顺手调用，不做任何重活。"""
+    t = " ".join(text.split())
+    if t:
+        _pending[group_id].append(f"{speaker}：{t[:80]}")
+
+
+async def maybe_auto_extract(group_id: int) -> None:
+    """攒够一批就后台提取一次。所有门槛不满足直接返回，绝不阻塞聊天。"""
+    if not cfg.ai_memory_auto_enabled or group_id in _inflight:
+        return
+    buf = _pending.get(group_id)
+    if not buf or len(buf) < cfg.ai_memory_auto_batch:
+        return
+    now = time.time()
+    if now - _last_auto.get(group_id, 0) < cfg.ai_memory_auto_cooldown:
+        return
+    today = date.today().isoformat()
+    if _daily.get((str(group_id), today), 0) >= cfg.ai_memory_auto_daily:
+        return
+    lines = list(buf)
+    _inflight.add(group_id)
+    try:
+        facts = await _extract_facts(group_id, lines)
+        for fact in facts:
+            add(group_id, fact, by="自动记忆")
+        _last_auto[group_id] = time.time()
+        _daily[(str(group_id), today)] = _daily.get((str(group_id), today), 0) + 1
+        buf.clear()
+        if facts:
+            logger.info(f"[ai_chat] 自动记忆 +{len(facts)}（群 {group_id}）：{facts}")
+    except Exception as exc:  # noqa: BLE001
+        logger.info(f"[ai_chat] 自动记忆提取失败（不影响聊天）: {exc!r}")
+    finally:
+        _inflight.discard(group_id)
+
+
+async def _extract_facts(group_id: int, lines: list[str]) -> list[str]:
+    """让模型从群聊片段里挑 0~3 条值得长期记住的事实。"""
+    client = make_client(cfg.ai_api_key, cfg.ai_api_base, cfg.ai_proxy)
+    prompt = (
+        "下面是一段 QQ 群聊天记录。如果里面有值得长期记住的、关于具体某个人的事实"
+        "（喜好、生日、宠物、正在做什么、重要计划、显著经历……），提炼成最多 3 条一句话事实。\n"
+        "要求：每条以说话人标记开头（照抄记录里冒号前的部分）；只记事实，寒暄和玩梗不要记；"
+        "和已有记忆重复的不要；没有值得记的就输出 []。\n"
+        "只输出 JSON 数组，格式如 [\"事实1\", \"事实2\"]，不要输出任何其他文字。\n\n"
+        f"已有记忆（不要与这些重复）：\n{list_text(group_id, 30) or '（暂无）'}\n\n"
+        "聊天记录：\n" + "\n".join(lines)
+    )
+    resp = await client.chat.completions.create(
+        **chat_kwargs(
+            [{"role": "user", "content": prompt}],
+            cfg,
+            max_tokens=800,   # 模型开着思考时，300 会被思考吃光导致正文为空
+            temperature=0.2,
+        )
+    )
+    reply = (resp.choices[0].message.content or "").strip()
+    reply = re.sub(r"^```(?:json)?|```$", "", reply, flags=re.M).strip()
+    data = json.loads(reply)
+    if not isinstance(data, list):
+        return []
+    out = []
+    for item in data:
+        if isinstance(item, str) and item.strip():
+            out.append(" ".join(item.split())[:120])
+    return out[:3]
