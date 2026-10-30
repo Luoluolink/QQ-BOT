@@ -1669,27 +1669,33 @@ def run_app_window(port: int) -> int:
         js_api=_WindowBridge(),
     )
 
-    def _set_icon() -> None:
-        """窗口起来后的外观收尾：Windows 换图标，macOS 融合深色标题栏。
+    if sys.platform == "darwin":
+        def _paint_titlebar_dark() -> None:
+            """macOS：pywebview 会给非无边框窗口的标题栏子视图刷
+            windowBackgroundColor（浅色模式下是白的），压在深色页面上
+            非常突兀。这里把它改成页面同款深色，顶部才融为一体。
 
-        macOS 浅色模式下原生标题栏是白的，压在深色页面上非常突兀——
-        把标题栏设为透明并隐藏标题文字，窗口的深色背景延伸到顶，
-        红绿灯悬浮在深色上（VS Code / Discord 同款处理）。
-        """
-        if os.name == "darwin":
-            for _ in range(40):   # native 句柄要等窗口真正创建，重试几秒
+            loaded 事件在主线程触发，AppKit 调用安全。
+            """
+            try:
+                import AppKit
+
                 native = getattr(window, "native", None)
                 if native is None:
-                    time.sleep(0.25)
-                    continue
-                # 启动函数本身在后台线程：AppKit 调用投主线程，投完即走不等待
-                native.performSelectorOnMainThread_withObject_waitUntilDone_(
-                    "setTitlebarAppearsTransparent:", True, False
+                    return
+                titlebar = native.contentView().superview().subviews().lastObject()
+                titlebar.setBackgroundColor_(
+                    AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(
+                        0.082, 0.055, 0.078, 1.0   # #150e14，与页面背景同色
+                    )
                 )
-                native.performSelectorOnMainThread_withObject_waitUntilDone_(
-                    "setTitleVisibility:", 1, False   # NSWindowTitleHidden
-                )
-                return
+            except Exception as exc:  # noqa: BLE001
+                print(f"[launcher] 标题栏着色失败: {exc!r}")
+
+        window.events.loaded += _paint_titlebar_dark
+
+    def _set_icon() -> None:
+        """窗口起来后的外观收尾：Windows 换图标。"""
         if os.name != "nt" or not ico.exists():
             return
         for _ in range(20):   # native 句柄要等窗口真正创建，重试几秒
