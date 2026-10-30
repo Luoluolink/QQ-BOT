@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Optional
 
@@ -217,3 +218,32 @@ def speaker_tag(card: str, nickname: str, user_id) -> str:
     """
     name = (card or nickname or "").strip()
     return f"{name}({user_id})" if name else f"QQ{user_id}"
+
+
+def split_reply_bubbles(reply: str, max_bubbles: int = 3) -> list[str]:
+    """把一条回复拆成 1~3 条短消息，模拟真人连发的节奏。
+
+    真人发消息是「哈哈这个我知道」一条、「我还知道个冷知识」又一条——
+    不是把三句话挤进一个大段落。按句末标点切分，过短的碎片并回前一条；
+    只有一句的不拆。上限 max_bubbles 防止刷屏，
+    超出部分并回最后一条。
+    """
+    text = (reply or "").strip()
+    if not text:
+        return []
+    parts = [p.strip() for p in re.split(r"(?<=[。！？!?…~～])\s*", text) if p.strip()]
+    if len(parts) <= 1:
+        return [text]
+    merged: list[str] = []
+    for part in parts:
+        if merged and (len(part) <= 3 or len(merged[-1]) <= 3):
+            merged[-1] += part        # 碎片（语气词、短应答）并回前一条
+        else:
+            merged.append(part)
+    if len(merged) <= 1:
+        return [text]
+    bubbles = merged[:max_bubbles]
+    rest = "".join(merged[max_bubbles:])
+    if rest:
+        bubbles[-1] += rest
+    return bubbles

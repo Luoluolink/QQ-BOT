@@ -438,6 +438,9 @@ class Config(BaseModel):
     ai_memory_auto_cooldown: int = 600
     # 每群每天最多提取几次（每次最多记 3 条）
     ai_memory_auto_daily: int = 6
+    # 回复拆条：把长回复按句子拆成 1~3 条短消息连发（像真人打字），
+    # 关掉就是整段挤在一个气泡里
+    ai_reply_split: bool = True
 
     # ---------- 相册内容索引 ----------
     # 存图时让识图模型生成一句话描述存进 data/album_index.json，

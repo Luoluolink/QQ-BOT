@@ -1253,31 +1253,41 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
         # 顺手检查是否该压缩了：到期就起后台任务，不拖慢这条回复
         digest.maybe_compress(group_id)
 
-    segments: list = []
-    if cfg.ai_reply_quote:
-        segments.append(MessageSegment.reply(event.message_id))
-    # 链接转卡片：回复里的 B 站/网页链接自动变成分享卡片，失败退回纯文本
-    segments.extend(await crawler.linkify(reply, proxy=cfg.ai_crawler_youtube_proxy))
-
+    # 拆条连发：按句子把回复拆成 1~3 条短消息，像真人打字那样分开发。
+    # 引用只挂第一条，链接卡片和表情包挂最后一条，中间带小间隔。
+    bubbles = tools.split_reply_bubbles(reply) if cfg.ai_reply_split else [reply]
     sticker = await _maybe_sticker(bot, text, group_id)
-    if sticker is not None:
-        segments.append(sticker)
 
-    try:
-        # 先直接 send：卡片段（share）个别 NapCat 版本可能不支持，
-        # 失败就撤掉卡片退回纯文本重发，不能让整条回复消失
-        await bot.send(event, Message(segments))
-        _followup_settle(event, group_id)
-        return
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(f"[ai_chat] 带卡片发送失败，退回纯文本: {exc!r}")
+    for idx, bubble in enumerate(bubbles):
+        last = idx == len(bubbles) - 1
+        segments: list = []
+        if idx == 0 and cfg.ai_reply_quote:
+            segments.append(MessageSegment.reply(event.message_id))
+        # 链接转卡片：回复里的 B 站/网页链接自动变成分享卡片，失败退回纯文本
+        segments.extend(await crawler.linkify(bubble, proxy=cfg.ai_crawler_youtube_proxy))
+        if last and sticker is not None:
+            segments.append(sticker)
 
-    fallback: list = []
-    if cfg.ai_reply_quote:
-        fallback.append(MessageSegment.reply(event.message_id))
-    fallback.append(MessageSegment.text(reply))
+        try:
+            # 卡片段（share）个别 NapCat 版本可能不支持，失败撤掉卡片退纯文本重发
+            await bot.send(event, Message(segments))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[ai_chat] 带卡片发送失败，退回纯文本: {exc!r}")
+            retry: list = []
+            if idx == 0 and cfg.ai_reply_quote:
+                retry.append(MessageSegment.reply(event.message_id))
+            retry.append(MessageSegment.text(bubble))
+            try:
+                await bot.send(event, Message(retry))
+            except Exception as exc2:  # noqa: BLE001
+                logger.warning(f"[ai_chat] 纯文本重发也失败，放弃剩余气泡: {exc2!r}")
+                break
+
+        if not last:
+            # 模拟真人打字间隔，也避免瞬时连发触发风控
+            await asyncio.sleep(random.uniform(0.6, 1.4))
+
     _followup_settle(event, group_id)
-    await chat.finish(Message(fallback))
 
 
 files_cmd = on_command("files", aliases={"文件", "资源"}, priority=10, block=True)
@@ -2073,13 +2083,19 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
 
     asyncio.create_task(memory.maybe_auto_extract(-user_id))
 
-    segments: list = []
-    # 私聊不加引用：一对一聊天里每条都带「回复」块非常机器味，
-    # 引用只对群聊有意义（标明在接谁的话）。私聊直接说话。
-    segments.append(MessageSegment.text(reply))
+    # 私聊同样拆条连发：一对一聊天里大段落更显得像报告
+    bubbles = tools.split_reply_bubbles(reply) if cfg.ai_reply_split else [reply]
+    sticker = await _maybe_sticker(bot, text, -user_id)
 
-    sticker = await _maybe_sticker(bot, text, -event.user_id)
-    if sticker is not None:
-        segments.append(sticker)
-
-    await private_chat.finish(Message(segments))
+    for idx, bubble in enumerate(bubbles):
+        last = idx == len(bubbles) - 1
+        segments: list = [MessageSegment.text(bubble)]
+        if last and sticker is not None:
+            segments.append(sticker)
+        try:
+            await bot.send(event, Message(segments))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[ai_chat] 私聊发送失败: {exc!r}")
+            break
+        if not last:
+            await asyncio.sleep(random.uniform(0.6, 1.4))
