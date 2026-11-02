@@ -18,14 +18,17 @@
 
 from __future__ import annotations
 
+import asyncio
+import time as _time
 from collections import defaultdict, deque
 from typing import DefaultDict, Deque
 
-from nonebot import get_plugin_config, on_message
+from nonebot import get_plugin_config, logger, on_message
 from nonebot.adapters import Event
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent
 from nonebot.rule import Rule
 
+from . import vision
 from .config import Config
 from .tools import at_me, speaker_tag
 
@@ -93,3 +96,37 @@ async def _handle_record(bot: Bot, event: GroupMessageEvent) -> None:
         event.user_id,
     )
     record(event.group_id, speaker, event.get_plaintext())
+
+    # 图片记忆：这张图后台生成描述存进上下文，隔空提问才接得住
+    if cfg.ai_vision_enabled and any(s.type == "image" for s in event.get_message()):
+        asyncio.create_task(_remember_image(bot, event, speaker))
+
+
+# ---------------------------------------------------------------- 图片记忆
+#
+# 群友发的图（不 @ 机器人）后台用视觉模型生成一句话描述存进上下文，
+# 之后「评价一下刚才那张图」才有东西可评。节流 + 每日上限防账单失控。
+
+_img_last: dict[int, float] = {}
+_img_daily: dict[tuple[str, str], int] = {}
+
+
+async def _remember_image(bot: Bot, event: GroupMessageEvent, speaker: str) -> None:
+    gid = event.group_id
+    now = _time.time()
+    if now - _img_last.get(gid, 0) < 8:      # 节流：两组图至少隔 8 秒
+        return
+    today = _time.strftime("%Y-%m-%d")
+    if _img_daily.get((str(gid), today), 0) >= 30:
+        return
+    _img_last[gid] = now
+    try:
+        images = await vision.collect_images(bot, event, limit=1)
+        desc = await vision.describe_images(bot, images, mode=cfg.ai_vision_image_mode)
+        if not desc:
+            return
+        _img_daily[(str(gid), today)] = _img_daily.get((str(gid), today), 0) + 1
+        record(gid, speaker, f"[图片] {desc}")
+        logger.info(f"[ai_chat] 图片记忆：{desc[:60]}")
+    except Exception as exc:  # noqa: BLE001
+        logger.info(f"[ai_chat] 图片记忆失败（不影响聊天）: {exc!r}")

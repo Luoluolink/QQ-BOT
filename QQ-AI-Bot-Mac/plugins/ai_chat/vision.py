@@ -23,8 +23,14 @@ import os
 import urllib.request
 from urllib.parse import urlparse
 
+from nonebot import get_plugin_config
 from nonebot.adapters.onebot.v11 import Bot, MessageEvent
 from nonebot.log import logger
+
+from .ai_client import chat_kwargs, make_client
+from .config import Config
+
+cfg = get_plugin_config(Config)
 
 # 图片段类型。mface 是 QQ 商城表情，本质也是图，但常常拿不到 url，所以默认不算
 IMAGE_TYPES = ("image",)
@@ -264,3 +270,37 @@ def history_text(text: str, images: list[dict]) -> str:
     if body and marks:
         return f"{body} {marks}"
     return body or marks
+
+
+async def describe_images(bot: Bot, images: list[dict], mode: str = "url") -> str:
+    """后台图片描述：把群友发的图转成一句话文字描述。
+
+    群友发图不 @ 机器人时，图本来只会在历史里留个 [图片] 占位——
+    之后有人说「评价一下那张图」就没东西可评。这里用视觉模型
+    在后台把图写成描述存进上下文，隔空提问才接得住。
+    没拼上任何图或调用失败都返回空串（静默，不影响聊天）。
+    """
+    if not images:
+        return ""
+    prompt = "用一句话客观描述这张图片的内容（30 字以内，说清主体和它是什么样的）。"
+    content = await build_content(bot, prompt, images[:1], prompt, mode)
+    if isinstance(content, str):
+        return ""   # 一张图都没拼进去 = 描述失败
+    last_exc: Exception | None = None
+    for _attempt in range(2):   # 连接错误常有瞬时性，失败重试一次
+        try:
+            client = make_client(cfg.ai_api_key, cfg.ai_api_base, cfg.ai_proxy)
+            resp = await client.chat.completions.create(
+                **chat_kwargs(
+                    [{"role": "user", "content": content}],
+                    cfg,
+                    max_tokens=400,
+                    temperature=0.3,
+                )
+            )
+            return (resp.choices[0].message.content or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            await asyncio.sleep(2)
+    logger.info(f"[ai_chat] 后台图片描述失败: {last_exc!r}")
+    return ""
