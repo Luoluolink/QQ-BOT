@@ -33,12 +33,7 @@ from typing import Any
 from urllib.parse import unquote
 
 import httpx2
-from nonebot import get_plugin_config, logger
-
-from .ai_client import chat_kwargs, make_client
-from .config import Config
-
-cfg = get_plugin_config(Config)
+from nonebot import logger
 
 # 项目根目录下的 data/（已在 .gitignore 里忽略）
 _STATE_PATH = (
@@ -321,6 +316,11 @@ def _bing_query(text: str) -> str:
 
 
 async def _search_keywords(query: str, api_key: str, api_base: str) -> str:
+    # 延迟导入：websearch 会被测试按文件路径独立加载，模块级相对导入会炸
+    from .ai_client import chat_kwargs, make_client  # noqa: PLC0415
+    from .config import Config, get_plugin_config  # noqa: PLC0415
+
+    cfg = get_plugin_config(Config)
     """让对话模型把搜索请求浓缩成 2~4 个关键词。
 
     必应对整句和时间状语（「今天的科技新闻」）命中率极差——

@@ -1211,11 +1211,12 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[ai_chat] 调用模型失败: {exc!r}")
-        await chat.finish("模型那边好像出问题了，稍后再试试～")
+        # 模型错误不出声：群里突然一句「模型出问题了」很出戏，日志里有记录
+        return
 
     if resp is None:
         # 风控重试全失败：不把英文拒绝文案丢群里，也不写进历史污染上下文
-        await chat.finish("这条触发了上游内容风控，我答不了，换个问法试试～")
+        return   # 风控拦截静默处理
 
     reply = (resp.choices[0].message.content or "").strip()
     # 兜底清洗：偶发的思考过程泄漏（见 _strip_inner_monologue 注释）
@@ -1230,7 +1231,7 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
             f"disable_thinking={cfg.ai_disable_thinking}, "
             f"reasoning_effort={cfg.ai_reasoning_effort!r}, usage={resp.usage}"
         )
-        await chat.finish("模型光顾着思考没写出正文，稍后再试试～")
+        return   # 思考吃光 token 导致空正文，同样沉默
 
     # 记录回复内容（截断）：排查「机器人到底回了什么」「回复多慢」全靠它
     logger.info(f"[ai_chat] 回复({len(reply)}字, {time.time() - _t0:.1f}s): {reply[:200]}")
@@ -2067,14 +2068,14 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[ai_chat] 私聊调用模型失败: {exc!r}")
-        await private_chat.finish("模型那边好像出问题了，稍后再试试～")
+        return   # 模型错误不出声
 
     if resp is None:
-        await private_chat.finish("这条触发了上游内容风控，我答不了，换个问法试试～")
+        return   # 风控拦截静默处理
 
     reply = (resp.choices[0].message.content or "").strip()
     if not reply:
-        await private_chat.finish("模型光顾着思考没写出正文，把 AI_MAX_TOKENS 调大一点试试")
+        return   # 空正文沉默处理
 
     _demote_image_content(_private_history[user_id])
     _private_history[user_id].append({"role": "user", "content": user_content})
