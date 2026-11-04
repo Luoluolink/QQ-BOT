@@ -25,11 +25,20 @@ from __future__ import annotations
 
 import json
 from datetime import date
+import base64
+import html
+import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 import httpx2
-from nonebot import logger
+from nonebot import get_plugin_config, logger
+
+from .ai_client import chat_kwargs, make_client
+from .config import Config
+
+cfg = get_plugin_config(Config)
 
 # 项目根目录下的 data/（已在 .gitignore 里忽略）
 _STATE_PATH = (
@@ -208,17 +217,23 @@ def record_round() -> int:
 async def search_web(
     query: str, count: int = 5, api_key: str = "", api_base: str = ""
 ) -> list[dict]:
-    """联网检索，返回 DeepSeek Search API 的结果列表；任何失败都返回空列表。
+    """联网检索，返回结果列表；任何失败都返回空列表。
 
-    计费与降级：只有 HTTP 200 且带回结果的调用才记额度（官方规则：
-    空结果与失败不计费）；网络错误/参数错误只告警不抛出——
+    两条路，按当前对话模型自动选：
+    - api_base 是 DeepSeek → 官方 Search API（按次计费，成功才记额度）
+    - 其他模型（MiMo/GLM…）→ 必应抓取，无需 key——
+      旧实现把搜索端点绑在 DeepSeek 上，换模型后请求 404、联网失效。
     聊天功能永远比联网重要，不能因为搜不到就不说话。
     """
-    if not api_key:
-        return []
-    q = (query or "").strip()[:128]  # 官方上限 128 字符
+    q = (query or "").strip()[:128]
     if not q:
         return []
+    if "deepseek" in (api_base or "").lower() and api_key:
+        return await _deepseek_search(q, count, api_key, api_base)
+    return await _bing_search(q, count, api_key, api_base)
+
+
+async def _deepseek_search(q: str, count: int, api_key: str, api_base: str) -> list[dict]:
     url = (api_base or "https://api.deepseek.com/v1").rstrip("/") + _SEARCH_PATH
     try:
         async with httpx2.AsyncClient(timeout=_SEARCH_TIMEOUT) as client:
@@ -277,3 +292,117 @@ def format_results(results: list[dict], query: str) -> str:
         if url:
             lines.append(f"   {url}")
     return "\n".join(lines)
+
+
+_BING_URL = "https://cn.bing.com/search"
+_BING_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+
+
+def _bing_query(text: str) -> str:
+    """把自然语言搜索请求裁成搜索关键词。
+
+    必应对整句话的命中率很差（「帮我搜一下今天的科技新闻」会搜出一堆
+    不相干的站），DeepSeek API 能理解整句但必应不能——把命令动词和
+    客套 filler 剥掉，只留核心词。
+    """
+    q = text.strip()
+    q = re.sub(
+        r"^(帮我|麻烦|请|先)?(上网|联网|用必应|用百度)?"
+        r"(帮我)?(搜一下|搜索一下|搜搜|搜索|查一下|查查|查查资料|查|找一下|找找|看看)",
+        "", q,
+    )
+    q = re.sub(r"(要)?最新的$|(要)?最新版的$", "", q)
+    q = re.sub(r"(今天|今日)的", "", q)
+    q = q.strip("，。！？、 ,.!？?\n")
+    return q or text.strip()
+
+
+async def _search_keywords(query: str, api_key: str, api_base: str) -> str:
+    """让对话模型把搜索请求浓缩成 2~4 个关键词。
+
+    必应对整句和时间状语（「今天的科技新闻」）命中率极差——
+    会搜出一堆日历天气站。让模型先浓缩成关键词，命中率立刻正常。
+    模型不可用时退回正则裁剪。
+    """
+    try:
+        client = make_client(api_key, api_base, cfg.ai_proxy)
+        resp = await client.chat.completions.create(
+            **chat_kwargs(
+                [{"role": "user", "content":
+                  "把用户的搜索请求改写成适合搜索引擎的关键词（2~4 个词，空格分隔）。\n"
+                  "规则：去掉「帮我/搜一下/查一下」这类请求用语；"
+                  "去掉「今天的/最新的」这类时间修饰——搜索引擎会自己排新内容；"
+                  "只保留核心主题词。\n"
+                  "示例：「帮我搜一下今天的科技新闻，要最新的」→ 科技新闻\n"
+                  "只输出关键词，不要任何解释或标点。\n"
+                  "用户的搜索请求：" + query}],
+                cfg,
+                max_tokens=600,
+                temperature=0.1,
+            )
+        )
+        kw = (resp.choices[0].message.content or "").strip()
+        kw = re.sub(r"^[“\"'「『\s]+|[”\"'」』。\s]+$", "", kw)
+        kw = re.sub(r"(今天|今日)的", "", kw)   # 时间修饰在必应只会搜出日历天气站
+        return " ".join(kw.split()) or query
+    except Exception:  # noqa: BLE001
+        return _bing_query(query)
+
+
+async def _bing_search(
+    query: str, count: int, api_key: str = "", api_base: str = ""
+) -> list[dict]:
+    """抓必应（国内直连、无需 key）。解析失败/被风控返回空列表。"""
+    query = await _search_keywords(query, api_key, api_base)
+    if not query:
+        return []
+    try:
+        async with httpx2.AsyncClient(
+            timeout=_SEARCH_TIMEOUT, follow_redirects=True
+        ) as client:
+            resp = await client.get(
+                _BING_URL,
+                params={"q": query, "count": str(max(count, 10))},
+                headers={
+                    "User-Agent": _BING_UA,
+                    "Accept-Language": "zh-CN,zh;q=0.9",
+                },
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[websearch] 必应检索请求失败: {exc!r}")
+        return []
+    if resp.status_code != 200:
+        logger.warning(f"[websearch] 必应检索 HTTP {resp.status_code}")
+        return []
+    page = resp.text
+    results: list[dict] = []
+    for block in re.findall(r'<li class="b_algo".*?</li>', page, re.S):
+        m = re.search(r'<h2[^>]*><a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', block, re.S)
+        if not m:
+            continue
+        href = html.unescape(m.group(1))
+        # 必应的跳转链接：/ck/a?u=a1<base64url> —— 解出真实地址
+        ck = re.search(r"[?&]u=a1([^&]+)", href)
+        if ck:
+            b64 = ck.group(1)
+            b64 += "=" * (-len(b64) % 4)
+            try:
+                href = base64.urlsafe_b64decode(b64).decode("utf-8", "replace")
+            except Exception:  # noqa: BLE001
+                pass
+        unq = unquote(href)
+        if unq.startswith("http"):
+            href = unq
+        title = html.unescape(re.sub(r"<[^>]+>", "", m.group(2))).strip()
+        sm = re.search(r"<p[^>]*>(.*?)</p>", block, re.S)
+        snippet = html.unescape(re.sub(r"<[^>]+>", "", sm.group(1))).strip() if sm else ""
+        if title and href.startswith("http"):
+            results.append({"title": title, "url": href, "snippet": snippet})
+        if len(results) >= count:
+            break
+    if results:
+        record_round()   # 计入每日额度，让 daily limit 对抓取同样生效
+    return results
