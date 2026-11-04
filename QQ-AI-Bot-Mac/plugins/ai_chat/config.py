@@ -424,6 +424,9 @@ class Config(BaseModel):
     # 图上短语的颜色。默认吉普莉尔粉（配白描边，任何背景上都清晰），
     # 想换写 hex 色值，如 AI_IMAGEGEN_TEXT_COLOR=#ff8fc7
     ai_imagegen_text_color: str = "#f78fb7"
+    # 生成过的表情包存进 stickers/generated/（文件名=主题），同主题再画
+    # 直接发缓存不重新生成。目录上限 60 张挤掉最旧的
+    ai_imagegen_cache: bool = True
 
     # ---------- 情绪与自动记忆 ----------
     # 情绪状态机：被夸/被怼/被戳/被道谢等事件推动每组一个会衰减的心情，

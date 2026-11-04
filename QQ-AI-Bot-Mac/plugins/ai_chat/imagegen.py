@@ -24,6 +24,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import re
+import shutil
 import json
 import random
 import time
@@ -514,6 +516,58 @@ async def _download(url: str) -> bytes | None:
         return None
 
 
+
+
+# ---------------------------------------------------------------- 生成缓存
+#
+# 生成过的表情包按主题存进 stickers/generated/，文件名就是主题——
+# stickers 模块的语义匹配按文件名找表情，存进去自动进可复用池。
+# 目录超上限时挤掉最旧的，防止无限膨胀。
+
+def _cache_dir() -> Path:
+    d = Path(__file__).resolve().parents[2] / cfg.ai_sticker_dir / "generated"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _safe_name(topic: str) -> str:
+    """主题 → 安全文件名：去路径符/标点，留中英数字，截 24 字。"""
+    keep = re.sub(r"[^\w\u4e00-\u9fff一-龥]+", "_", topic).strip("_")
+    return (keep or "表情包")[:24]
+
+
+def _cache_find(topic: str) -> Path | None:
+    """按主题找已生成过的表情：文件名包含主题关键词就算命中。"""
+    key = _safe_name(topic)
+    if not key:
+        return None
+    d = _cache_dir()
+    for p in sorted(d.glob("*.png")):
+        if key[:8] in p.stem:      # 前 8 字吻合即视为同一主题
+            return p
+    return None
+
+
+def _cache_save(topic: str, image: bytes) -> None:
+    """生成成功后把成图存进缓存目录，超上限挤掉最旧的。"""
+    try:
+        d = _cache_dir()
+        name = _safe_name(topic)
+        stamp = time.strftime("%m%d")
+        target = d / f"{name}_{stamp}.png"
+        n = 1
+        while target.exists() and n < 50:   # 同主题同日多张：编号区分
+            target = d / f"{name}_{stamp}_{n}.png"
+            n += 1
+        target.write_bytes(image)
+        files = sorted(d.glob("*.png"), key=lambda p: p.stat().st_mtime)
+        while len(files) > 60:               # 缓存上限 60 张
+            files.pop(0).unlink(missing_ok=True)
+            files = sorted(d.glob("*.png"), key=lambda p: p.stat().st_mtime)
+    except Exception as exc:  # noqa: BLE001
+        logger.info(f"[ai_chat] 表情包缓存保存失败（不影响发送）: {exc!r}")
+
+
 async def generate_and_send(
     bot: Bot, event: GroupMessageEvent, topic: str, mode: str = "auto"
 ) -> bool:
@@ -537,6 +591,21 @@ async def generate_and_send(
     if not _take_quota():
         logger.info("[ai_chat] 生图日限已用完，跳过")
         return False
+
+    # ---- 缓存命中：同样的主题画过就直接发旧的，省生成费和时间
+    if cfg.ai_imagegen_cache:
+        hit = _cache_find(topic)
+        if hit is not None:
+            logger.info(f"[ai_chat] 表情包缓存命中：{hit.name}")
+            try:
+                await bot.send(
+                    event,
+                    Message(MessageSegment.image("base64://" + base64.b64encode(hit.read_bytes()).decode())),
+                )
+                return True
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[ai_chat] 缓存表情发送失败，重新生成: {exc!r}")
+
 
     if mode == "auto":
         mode = "character" if is_character_topic(topic) else "free"
@@ -565,6 +634,8 @@ async def generate_and_send(
             f"[ai_chat] 图片已发出（{mode} 模式，{len(image) // 1024}KB，"
             f"今日第 {_usage['global']} 张）"
         )
+        if cfg.ai_imagegen_cache and mode in ("character", "auto"):
+            _cache_save(topic, image)
         return True
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[ai_chat] 图片发送失败: {exc!r}")
