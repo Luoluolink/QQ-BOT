@@ -227,7 +227,13 @@ async def build_content(
     for image in images:
         url = image.get("url") or ""
         if mode == "base64":
-            url = await as_data_url(bot, image) or url
+            b64 = await as_data_url(bot, image)
+            if not b64:
+                # base64 转换失败就跳过这张图——退回 URL 等于重试
+                # 刚刚失败过的下载路径，只会再吃一次 400
+                logger.info("[ai_chat] 一张图片转 base64 失败，跳过（不退回 URL）")
+                continue
+            url = b64
         if not url:
             continue
         parts.append({"type": "image_url", "image_url": {"url": url}})
