@@ -169,6 +169,10 @@ async def _gate_slash_commands(matcher, bot, event, state) -> None:
 _history: DefaultDict[int, Deque[dict]] = defaultdict(
     lambda: deque(maxlen=cfg.ai_history_rounds * 2)
 )
+# 最近回复的起头方式（口癖自查用）：每群留最近 3 条的开头
+_reply_openers: DefaultDict[int, Deque[str]] = defaultdict(
+    lambda: deque(maxlen=3)
+)
 _last_call: Dict[int, float] = {}
 _usage: DefaultDict[int, int] = defaultdict(int)
 _usage_day: str = date.today().isoformat()
@@ -634,7 +638,9 @@ async def _create_completion(messages: list[dict], allow_search: bool = False):
             search_attached = True
 
     try:
-        resp = await get_client().chat.completions.create(**kwargs)
+        resp = await get_client().chat.completions.create(
+            **kwargs, timeout=120
+        )
     except Exception as exc:  # noqa: BLE001
         if not (search_attached and _web_search_unavailable(exc)):
             raise
@@ -1211,6 +1217,13 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
         if mood_ctx:
             messages.append({"role": "system", "content": mood_ctx})
 
+    # 口癖自查：最近三条回复同一语气词起头就提醒换一种开口方式
+    openers = list(_reply_openers[group_id])
+    if len(openers) >= 3 and len(set(openers[-3:])) == 1:
+        messages.append({"role": "system", "content":
+            f"【口癖提醒】你最近三条回复都以「{openers[-1]}」开头——"
+            "这次换一种完全不同的开口方式，别再用它起步。"})
+
     # 长期记忆注入：/记住 存下的事实，按与本条消息的相关性挑出来给模型。
     # 放在检索结果之后、历史之前——记忆是「明确交代过的事」，优先级应高于闲聊历史。
     if cfg.ai_memory_enabled:
@@ -1249,6 +1262,8 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
         mood.react_to_text(group_id, text)
     # 自动记忆：顺手把这句话记进提取缓冲，攒够一批后台提炼
     memory.note(group_id, speaker, text)
+    # 口癖记录：留这条回复的起头，给下次的口癖自查用
+    _reply_openers[group_id].append(reply[:2])
 
     user_content = await vision.build_content(
         bot,

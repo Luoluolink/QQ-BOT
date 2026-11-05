@@ -317,8 +317,10 @@ def _bing_query(text: str) -> str:
 
 async def _search_keywords(query: str, api_key: str, api_base: str) -> str:
     # 延迟导入：websearch 会被测试按文件路径独立加载，模块级相对导入会炸
+    from nonebot import get_plugin_config  # noqa: PLC0415
+
     from .ai_client import chat_kwargs, make_client  # noqa: PLC0415
-    from .config import Config, get_plugin_config  # noqa: PLC0415
+    from .config import Config  # noqa: PLC0415
 
     cfg = get_plugin_config(Config)
     """让对话模型把搜索请求浓缩成 2~4 个关键词。
@@ -342,7 +344,9 @@ async def _search_keywords(query: str, api_key: str, api_base: str) -> str:
                 cfg,
                 max_tokens=600,
                 temperature=0.1,
-            )
+            ),
+            timeout=25,   # 关键词浓缩是辅助步骤：MiMo 偶发不响应时最多等 25 秒，
+                          # 不然 600 秒的默认超时会让整条回复挂十分钟
         )
         kw = (resp.choices[0].message.content or "").strip()
         kw = re.sub(r"^[“\"'「『\s]+|[”\"'」』。\s]+$", "", kw)

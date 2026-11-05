@@ -302,7 +302,8 @@ async def describe_images(bot: Bot, images: list[dict], mode: str = "url") -> st
                     cfg,
                     max_tokens=400,
                     temperature=0.3,
-                )
+                ),
+                timeout=60,
             )
             return (resp.choices[0].message.content or "").strip()
         except Exception as exc:  # noqa: BLE001
