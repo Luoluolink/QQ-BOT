@@ -1026,6 +1026,49 @@ async def handle_imagegen(bot: Bot, event: GroupMessageEvent) -> None:
         await imagegen_cmd.finish("……这张画不出来，换个话题试试")
 
 
+async def _send_bubble(
+    bot: Bot, event, segments: list, plain_segments: list, desc: str = ""
+) -> bool:
+    """发一条气泡，带两层兜底。
+
+    - 连接类失败（NetworkError/ApiNotAvailable）：NapCat 的 WS 每 5 秒
+      自动重连，等它回来原样重发，最多等 5 轮——回复生成好了不该因为
+      撞上断连窗口就丢掉。
+    - ActionFailed（卡片段被 NapCat 拒收）：退纯文本重发一次。
+    都失败返回 False，调用方决定是否继续发剩余气泡。
+    """
+    from nonebot.adapters.onebot.v11.exception import (  # noqa: PLC0415
+        ActionFailed,
+        ApiNotAvailable,
+        NetworkError,
+    )
+
+    try:
+        await bot.send(event, Message(segments))
+        return True
+    except (NetworkError, ApiNotAvailable):
+        for _ in range(5):
+            await asyncio.sleep(5)
+            try:
+                await bot.send(event, Message(segments))
+                return True
+            except (NetworkError, ApiNotAvailable):
+                continue
+            except ActionFailed:
+                break
+        logger.warning(f"[ai_chat] {desc}等重连重发 5 轮仍失败，放弃")
+        return False
+    except ActionFailed:
+        pass   # 卡片段被拒收 → 退纯文本
+
+    try:
+        await bot.send(event, Message(plain_segments))
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[ai_chat] {desc}纯文本重发失败: {exc!r}")
+        return False
+
+
 def _followup_settle(event: GroupMessageEvent, group_id: int) -> None:
     """回复成功送达后结算连续对话窗口：@ 开新一轮（重置额度），
     「接着说」扣一次额度。发失败不结算，不白占人家的额度。"""
@@ -1211,11 +1254,12 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[ai_chat] 调用模型失败: {exc!r}")
-        await chat.finish("模型那边好像出问题了，稍后再试试～")
+        # 模型错误不出声：群里突然一句「模型出问题了」很出戏，日志里有记录
+        return
 
     if resp is None:
         # 风控重试全失败：不把英文拒绝文案丢群里，也不写进历史污染上下文
-        await chat.finish("这条触发了上游内容风控，我答不了，换个问法试试～")
+        return   # 风控拦截静默处理
 
     reply = (resp.choices[0].message.content or "").strip()
     # 兜底清洗：偶发的思考过程泄漏（见 _strip_inner_monologue 注释）
@@ -1230,7 +1274,7 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
             f"disable_thinking={cfg.ai_disable_thinking}, "
             f"reasoning_effort={cfg.ai_reasoning_effort!r}, usage={resp.usage}"
         )
-        await chat.finish("模型光顾着思考没写出正文，稍后再试试～")
+        return   # 思考吃光 token 导致空正文，同样沉默
 
     # 记录回复内容（截断）：排查「机器人到底回了什么」「回复多慢」全靠它
     logger.info(f"[ai_chat] 回复({len(reply)}字, {time.time() - _t0:.1f}s): {reply[:200]}")
@@ -1261,27 +1305,21 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
     for idx, bubble in enumerate(bubbles):
         last = idx == len(bubbles) - 1
         segments: list = []
+        plain: list = []
         if idx == 0 and cfg.ai_reply_quote:
             segments.append(MessageSegment.reply(event.message_id))
+            plain.append(MessageSegment.reply(event.message_id))
         # 链接转卡片：回复里的 B 站/网页链接自动变成分享卡片，失败退回纯文本
         segments.extend(await crawler.linkify(bubble, proxy=cfg.ai_crawler_youtube_proxy))
+        plain.append(MessageSegment.text(bubble))
         if last and sticker is not None:
             segments.append(sticker)
+            plain.append(sticker)
 
-        try:
-            # 卡片段（share）个别 NapCat 版本可能不支持，失败撤掉卡片退纯文本重发
-            await bot.send(event, Message(segments))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[ai_chat] 带卡片发送失败，退回纯文本: {exc!r}")
-            retry: list = []
-            if idx == 0 and cfg.ai_reply_quote:
-                retry.append(MessageSegment.reply(event.message_id))
-            retry.append(MessageSegment.text(bubble))
-            try:
-                await bot.send(event, Message(retry))
-            except Exception as exc2:  # noqa: BLE001
-                logger.warning(f"[ai_chat] 纯文本重发也失败，放弃剩余气泡: {exc2!r}")
-                break
+        if not await _send_bubble(
+            bot, event, segments, plain, f"群 {group_id} 气泡 {idx + 1}/{len(bubbles)}"
+        ):
+            break   # 连接重试也发不出去（WS 断开中），剩余气泡放弃
 
         if not last:
             # 模拟真人打字间隔，也避免瞬时连发触发风控
@@ -2067,14 +2105,14 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[ai_chat] 私聊调用模型失败: {exc!r}")
-        await private_chat.finish("模型那边好像出问题了，稍后再试试～")
+        return   # 模型错误不出声
 
     if resp is None:
-        await private_chat.finish("这条触发了上游内容风控，我答不了，换个问法试试～")
+        return   # 风控拦截静默处理
 
     reply = (resp.choices[0].message.content or "").strip()
     if not reply:
-        await private_chat.finish("模型光顾着思考没写出正文，把 AI_MAX_TOKENS 调大一点试试")
+        return   # 空正文沉默处理
 
     _demote_image_content(_private_history[user_id])
     _private_history[user_id].append({"role": "user", "content": user_content})
@@ -2092,10 +2130,11 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
         segments: list = [MessageSegment.text(bubble)]
         if last and sticker is not None:
             segments.append(sticker)
-        try:
-            await bot.send(event, Message(segments))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[ai_chat] 私聊发送失败: {exc!r}")
+
+        if not await _send_bubble(
+            bot, event, segments, segments, f"私聊 {user_id} 气泡 {idx + 1}/{len(bubbles)}"
+        ):
             break
+
         if not last:
             await asyncio.sleep(random.uniform(0.6, 1.4))
