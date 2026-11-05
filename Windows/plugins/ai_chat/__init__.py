@@ -46,7 +46,7 @@ from nonebot.message import run_preprocessor
 from nonebot.params import CommandArg
 from nonebot.plugin import PluginMetadata
 from nonebot.rule import CommandRule, Rule, to_me
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, BadRequestError
 
 from .ai_client import chat_kwargs, make_client
 from . import (
@@ -678,6 +678,23 @@ async def _complete_with_images(
     """
     try:
         return await _create_completion(messages, allow_search=allow_search)
+    except BadRequestError as exc:
+        # 模型说「media content 处理失败」= 消息里某个图的 URL 它下载/处理不了
+        # （QQ 图床 URL 会过期）。把本轮消息和历史里所有图片内容降级成
+        # [图片] 占位重试一次——宁可这轮看不到图，不能整条消息哑掉。
+        if "media content" not in str(exc):
+            raise
+        logger.warning(f"[ai_chat] 模型处理图片失败，降级重试: {str(exc)[:120]}")
+        demoted = [
+            m if not isinstance(m.get("content"), list)
+            else {**m, "content": vision.content_to_text(m["content"])}
+            for m in messages
+        ]
+        resp = await _create_completion(demoted, allow_search=allow_search)
+        reply = (resp.choices[0].message.content or "").strip()
+        if reply and not _looks_rejected(reply):
+            return resp
+        raise
     except Exception as exc:  # noqa: BLE001
         if not images or cfg.ai_vision_image_mode != "url":
             raise
@@ -1254,6 +1271,10 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[ai_chat] 调用模型失败: {exc!r}")
+        if "media content" in str(exc):
+            # 毒图清出持久历史：历史里残留的失效图片 URL 会让后续每条
+            # @ 消息都撞同一个 400，降级后下条消息就自愈
+            _demote_image_content(_history[group_id])
         # 模型错误不出声：群里突然一句「模型出问题了」很出戏，日志里有记录
         return
 
@@ -2105,6 +2126,8 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[ai_chat] 私聊调用模型失败: {exc!r}")
+        if "media content" in str(exc):
+            _demote_image_content(_private_history[user_id])
         return   # 模型错误不出声
 
     if resp is None:
