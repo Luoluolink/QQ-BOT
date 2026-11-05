@@ -1262,8 +1262,6 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
         mood.react_to_text(group_id, text)
     # 自动记忆：顺手把这句话记进提取缓冲，攒够一批后台提炼
     memory.note(group_id, speaker, text)
-    # 口癖记录：留这条回复的起头，给下次的口癖自查用
-    _reply_openers[group_id].append(reply[:2])
 
     user_content = await vision.build_content(
         bot,
@@ -1311,6 +1309,9 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
             f"reasoning_effort={cfg.ai_reasoning_effort!r}, usage={resp.usage}"
         )
         return   # 思考吃光 token 导致空正文，同样沉默
+
+    # 口癖记录：留这条回复的起头，给下次的口癖自查用（此时 reply 已定稿）
+    _reply_openers[group_id].append(reply[:2])
 
     # 记录回复内容（截断）：排查「机器人到底回了什么」「回复多慢」全靠它
     logger.info(f"[ai_chat] 回复({len(reply)}字, {time.time() - _t0:.1f}s): {reply[:200]}")
