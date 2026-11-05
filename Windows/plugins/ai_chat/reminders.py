@@ -78,10 +78,11 @@ def add(group_id: int, when: str, content: str, requester: str) -> str:
         return "时间没解析对，换个明确一点的说法？例如：明天早上8点"
     if due.timestamp() <= datetime.now().timestamp():
         return "这个时间已经过去了……"
+    content_clean = " ".join(content.split())[:100]
     items.append(
         {
             "time": when,
-            "content": " ".join(content.split())[:100],
+            "content": content_clean,
             "group_id": group_id,
             "requester": requester,
             "created": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -89,7 +90,7 @@ def add(group_id: int, when: str, content: str, requester: str) -> str:
     )
     items.sort(key=lambda e: e["time"])
     _save()
-    return "ok"
+    return f"记下了，{when} 我会提醒你「{content_clean}」"
 
 
 def _due_items() -> list[dict]:
@@ -170,7 +171,7 @@ async def _morning_briefings() -> None:
     """
     if not cfg.ai_briefing_enabled:
         return
-    import digest as digest_mod  # noqa: PLC0415
+    from . import digest as digest_mod  # noqa: PLC0415
 
     today = datetime.now().strftime("%Y-%m-%d")
     hh, mm = (cfg.ai_briefing_time.split(":") + ["0"])[:2]

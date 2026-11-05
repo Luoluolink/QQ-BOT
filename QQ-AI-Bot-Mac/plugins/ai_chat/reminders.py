@@ -171,7 +171,7 @@ async def _morning_briefings() -> None:
     """
     if not cfg.ai_briefing_enabled:
         return
-    import digest as digest_mod  # noqa: PLC0415
+    from . import digest as digest_mod  # noqa: PLC0415
 
     today = datetime.now().strftime("%Y-%m-%d")
     hh, mm = (cfg.ai_briefing_time.split(":") + ["0"])[:2]

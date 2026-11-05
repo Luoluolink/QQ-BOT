@@ -31,7 +31,14 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import DefaultDict, Deque, Dict
 
-from nonebot import get_plugin_config, logger, on_command, on_message, on_notice
+from nonebot import (
+    get_driver,
+    get_plugin_config,
+    logger,
+    on_command,
+    on_message,
+    on_notice,
+)
 from nonebot.adapters import Event
 from nonebot.adapters.onebot.v11 import (
     Bot,
@@ -174,6 +181,22 @@ _history: DefaultDict[int, Deque[dict]] = defaultdict(
 _reply_openers: DefaultDict[int, Deque[str]] = defaultdict(
     lambda: deque(maxlen=3)
 )
+
+# 待发队列：WS 断连窗口里发不出去的回复，连接回来自动补发。
+# 键是 bot 的 self_id（NapCat 重连后按 bot 分发），值是 send_group_msg 参数。
+_pending_sends: DefaultDict[str, list[dict]] = defaultdict(list)
+
+
+@get_driver().on_bot_connect
+async def _flush_pending_sends(bot: Bot) -> None:
+    """NapCat 重连成功的一刻，把断连窗口里没发出去的回复全部补发。"""
+    queue = _pending_sends.pop(str(bot.self_id), [])
+    for item in queue:
+        try:
+            await bot.call_api("send_group_msg", **item)
+            logger.info(f"[ai_chat] 断连期间的回复已补发（群 {item.get('group_id')}）")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[ai_chat] 补发失败（放弃）: {exc!r}")
 _last_call: Dict[int, float] = {}
 _usage: DefaultDict[int, int] = defaultdict(int)
 _usage_day: str = date.today().isoformat()
@@ -1080,7 +1103,16 @@ async def _send_bubble(
                 continue
             except ActionFailed:
                 break
-        logger.warning(f"[ai_chat] {desc}等重连重发 5 轮仍失败，放弃")
+        logger.warning(f"[ai_chat] {desc}等重连重发 5 轮仍失败，入队等重连补发")
+        group_id = getattr(getattr(event, "group_id", None), "__int__", lambda: 0)()
+        if group_id:
+            _pending_sends[str(bot.self_id)].append(
+                {
+                    "message_type": "group",
+                    "group_id": group_id,
+                    "message": Message(plain_segments),
+                }
+            )
         return False
     except ActionFailed:
         pass   # 卡片段被拒收 → 退纯文本
