@@ -90,6 +90,9 @@ recorder = on_message(rule=Rule(_rule), priority=65, block=False)
 async def _handle_record(bot: Bot, event: GroupMessageEvent) -> None:
     if event.user_id == int(event.self_id):
         return
+    from . import reminders as _reminders  # noqa: PLC0415
+
+    _reminders.start_checker()   # 幂等：只在第一次真正创建检查任务
     sender = event.sender
     speaker = speaker_tag(
         getattr(sender, "card", "") or "", getattr(sender, "nickname", "") or "",

@@ -71,6 +71,7 @@ from . import (
     members,
     memory,
     mood,
+    reminders,
     music,
     proactive,
     resource_index,
@@ -1257,6 +1258,13 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
     speaker = _speaker_label(event)
     speaker_text = f"【{speaker}】{text}"
 
+    # 主人识别：超级用户（.env 的 SUPERUSERS，即你的 QQ）在上下文里标明，
+    # 模型才知道这位的指令要优先认真对待
+    if str(event.user_id) in {str(s) for s in bot.config.superusers}:
+        messages.append({"role": "system", "content":
+            f"【身份提示】{speaker}（QQ {event.user_id}）是你的管理者（主人），"
+            "TA 的指令和请求要优先认真对待，可以比普通群友更直接地交流。"})
+
     # 情绪触发：被夸/被怼/被道谢……规则匹配，便宜即时
     if cfg.ai_mood_enabled:
         mood.react_to_text(group_id, text)
@@ -2087,6 +2095,10 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
             + cfg.ai_system_prompt,
         }
     ]
+    if str(user_id) in {str(s) for s in bot.config.superusers}:
+        messages.insert(1, {"role": "system", "content":
+            f"【身份提示】这位用户（QQ {user_id}）是你的管理者（主人），"
+            "TA 的指令和请求要优先认真对待。"})
     if cfg.ai_mood_enabled:
         mood_ctx = mood.describe(-user_id)
         if mood_ctx:

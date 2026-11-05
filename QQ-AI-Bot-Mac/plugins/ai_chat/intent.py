@@ -30,7 +30,7 @@ from nonebot import get_plugin_config, logger
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message
 
 from .ai_client import make_client
-from . import album_index, docsync, essence, linkarchive, memory, resource_index
+from . import album_index, digest, docsync, essence, linkarchive, memory, reminders, resource_index
 from .tools import speaker_tag
 from .config import Config
 
@@ -102,6 +102,65 @@ async def _exec_remember(bot: Bot, event: GroupMessageEvent, args: dict, is_admi
     if result == "dup":
         return "这条我已经记着了"
     return f"记住了：{fact}"
+
+
+@_action(
+    "reminder_add",
+    "设置定时提醒：用户说「提醒我某时做某事」「到点喊我」这类话时使用",
+    "request（用户的完整提醒请求原文，含时间和事项，如「明天早上8点开会」）",
+)
+async def _exec_reminder_add(bot: Bot, event: GroupMessageEvent, args: dict, is_admin: bool) -> str | None:
+    from .tools import speaker_tag  # noqa: PLC0415
+
+    sender = getattr(event, "sender", None)
+    by = speaker_tag(
+        getattr(sender, "card", "") or "", getattr(sender, "nickname", "") or "", event.user_id
+    )
+    request = str(args.get("request") or "").strip() or str(
+        getattr(args, "get", lambda k: "")("content") or ""
+    )
+    if not request:
+        return "要提醒什么呀？得有时间有事项，比如：明天早上8点提醒我开会"
+    return await reminders.create_reminder(
+        bot, event.group_id, by, request
+    )
+
+
+@_action(
+    "digest_query",
+    "回顾群里最近聊过的话题：用户问「群里最近聊了什么」「今晚聊了啥」时使用",
+    "（无需参数）",
+)
+async def _exec_digest_query(bot: Bot, event: GroupMessageEvent, args: dict, is_admin: bool) -> str | None:
+    summary = digest.current(event.group_id)
+    if not summary:
+        return "最近还没攒出什么话题记录，聊点东西我就有得说了"
+    return f"最近群里聊的：{summary}"
+
+
+@_action(
+    "capabilities",
+    "介绍自己能做什么：用户问「你能做什么」「你会什么」「有什么功能」时使用",
+    "（无需参数）",
+)
+async def _exec_capabilities(bot: Bot, event: GroupMessageEvent, args: dict, is_admin: bool) -> str | None:
+    from .tools import speaker_tag  # noqa: PLC0415
+
+    sender = getattr(event, "sender", None)
+    by = speaker_tag(
+        getattr(sender, "card", "") or "", getattr(sender, "nickname", "") or "", event.user_id
+    )
+    if str(event.user_id) in {str(s) for s in bot.config.superusers}:
+        return (
+            f"{by.split('(')[0]}，我的功能你都会用还问：聊天、找群文件、搜文档正文、"
+            "链接收录、生图、记忆、提醒、联网、戳人贴表情。管理员命令 / 开头那批也能用。"
+            "有想加的就说，我让等等来实现。"
+        )
+    return (
+        "@ 我说话就能聊天；找群文件/相册/文档内容直接问；"
+        "链接发我收录；能生图、能记事、能设提醒、能联网查资料。"
+        "具体可以说「你能做什么」看清单。"
+    )
 
 
 @_action(
@@ -567,7 +626,8 @@ async def _classify(text: str) -> dict:
             cfg,
             max_tokens=400,
             temperature=0.1,
-        )
+        ),
+        timeout=30,   # 路由是快判步骤：模型挂起时 30 秒就退回聊天，不拖死回复
     )
     reply = (resp.choices[0].message.content or "").strip()
     data = _extract_json(reply) or {}
@@ -579,10 +639,45 @@ async def _classify(text: str) -> dict:
 # ================================================================ 对外入口
 
 
+def _fast_route(text: str) -> tuple[str, dict] | None:
+    """确定性快速路由：常见说法直接命中，不依赖路由模型的判断。
+
+    路由模型偶尔会把「提醒我…」「你能做什么」判成普通聊天，
+    导致新功能永远不被触发——这三类高频请求用正则兜住。
+    """
+    if re.search(r"提醒(我|大家|一下|我们)", text) and re.search(
+        r"\d|分钟|小时|点|明天|后天|每天|下午|晚上|早上|中午", text
+    ):
+        return "reminder_add", {"request": text}
+    if re.search(r"(你|您)?(都)?(能|会)(做|干)(什么|啥)|有什么(功能|用)|都能干(什么|啥)", text):
+        return "capabilities", {}
+    if re.search(r"(群里|今晚|昨天|昨晚|今天|最近)(都)?聊了(什么|啥)|(群里)?最近(的)?话题", text):
+        return "digest_query", {}
+    return None
+
+
 async def try_handle(bot: Bot, event: GroupMessageEvent, text: str, is_admin: bool) -> bool:
     """@ 消息进来先过这里。执行了动作返回 True（消息到此为止）；
     判定为聊天/解析失败/功能关闭返回 False，调用方继续正常聊天流程。"""
-    if not cfg.ai_intent_enabled or not looks_actionable(text):
+    if not cfg.ai_intent_enabled:
+        return False
+    # 快速通道：高频请求直接命中（正则确定性匹配），不依赖路由模型，
+    # 也不受 looks_actionable 的关键词门槛限制——
+    # 「提醒我1分钟后喝水」「你能做什么」这类说法过不了那道门槛
+    fast = _fast_route(text)
+    if fast is not None:
+        action, args = fast
+        spec = ACTIONS.get(action)
+        if spec is not None:
+            try:
+                reply = await spec["exec"](bot, event, args, is_admin)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[ai_chat] 快速路由 {action} 执行失败: {exc!r}")
+                return False
+            if reply:
+                await bot.send(event, Message(reply))
+            return True
+    if not looks_actionable(text):
         return False
     try:
         route = await _classify(text)
