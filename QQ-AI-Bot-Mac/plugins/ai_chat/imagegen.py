@@ -592,6 +592,8 @@ async def generate_and_send(
         logger.info("[ai_chat] 生图日限已用完，跳过")
         return False
 
+    from . import ambient  # noqa: PLC0415  函数内导入避免环
+
     # ---- 缓存命中：同样的主题画过就直接发旧的，省生成费和时间
     if cfg.ai_imagegen_cache:
         hit = _cache_find(topic)
@@ -602,6 +604,8 @@ async def generate_and_send(
                     event,
                     Message(MessageSegment.image("base64://" + base64.b64encode(hit.read_bytes()).decode())),
                 )
+                # 记进群聊背景：否则「你刚发的是什么」机器人自己答不上来
+                ambient.record(event.group_id, "我", f"发了一张表情包（主题：{topic[:60]}）")
                 return True
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"[ai_chat] 缓存表情发送失败，重新生成: {exc!r}")
@@ -633,6 +637,11 @@ async def generate_and_send(
         logger.info(
             f"[ai_chat] 图片已发出（{mode} 模式，{len(image) // 1024}KB，"
             f"今日第 {_usage['global']} 张）"
+        )
+        # 同上：把自己发的图记进群聊背景，「你发的这张图」才接得住
+        ambient.record(
+            event.group_id, "我",
+            f"发了一张{'表情包' if mode == 'character' else '图片'}（主题：{topic[:60]}）",
         )
         if cfg.ai_imagegen_cache and mode in ("character", "auto"):
             _cache_save(topic, image)

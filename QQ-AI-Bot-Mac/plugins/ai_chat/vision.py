@@ -97,6 +97,39 @@ async def collect_images(bot: Bot, event: MessageEvent, limit: int = 3) -> list[
     return found
 
 
+async def collect_reply_images(
+    bot: Bot, event: MessageEvent, limit: int = 2
+) -> list[dict]:
+    """被引用（回复）消息里的图片。
+
+    用户「引用一张图 + @机器人」提问时，reply.message 里就带着原图段——
+    包括机器人自己发的图。不抽出来的话模型只能看到一个 [图片] 文字占位，
+    然后开始凭空编图片内容（实测编出过「图太暗了看不清」）。
+    """
+    reply = getattr(event, "reply", None)
+    msg = getattr(reply, "message", None)
+    if msg is None:
+        return []
+    found: list[dict] = []
+    for seg in msg:
+        if len(found) >= limit:
+            break
+        if seg.type not in IMAGE_TYPES:
+            continue
+        data = seg.data if isinstance(seg.data, dict) else {}
+        url = str(data.get("url") or "")
+        ref = str(data.get("file") or data.get("file_id") or "")
+        if not url and ref:
+            info = await _get_image(bot, ref)
+            url = str(info.get("url") or "")
+        if not url:
+            logger.info(f"[ai_chat] 引用消息里的图片拿不到地址，跳过（file={ref[:48]!r}）")
+            continue
+        found.append({"url": url, "ref": ref, "path": str(data.get("path") or "")})
+
+    return found
+
+
 # ---------------------------------------------------------------- 转成模型输入
 
 

@@ -1168,6 +1168,12 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
         if cfg.ai_vision_enabled
         else []
     )
+    # 引用消息里的图（包括机器人自己发的表情包）：引用提问「这张图怎么样」
+    # 时图不在本条消息里，不抽出来模型就只能对着 [图片] 占位瞎编
+    if cfg.ai_vision_enabled and len(images) < cfg.ai_vision_max_images:
+        images += await vision.collect_reply_images(
+            bot, event, limit=cfg.ai_vision_max_images - len(images)
+        )
 
     # 纯图片消息以前会在这里被 `if not text` 直接丢掉，
     # 连冷却和额度都不走，表现就是「发图没反应」。现在只要带了图就继续。
@@ -2113,6 +2119,11 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
         if cfg.ai_vision_enabled
         else []
     )
+    # 私聊同理：引用的图也抽出来（引用自己的图问问题的场景不少）
+    if cfg.ai_vision_enabled and len(images) < cfg.ai_vision_max_images:
+        images += await vision.collect_reply_images(
+            bot, event, limit=cfg.ai_vision_max_images - len(images)
+        )
     if not text and not images:
         return
 
