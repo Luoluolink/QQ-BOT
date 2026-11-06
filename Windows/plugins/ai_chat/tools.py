@@ -283,3 +283,28 @@ def is_time_question(text: str) -> bool:
     if not t or len(t) > 30:
         return False
     return bool(_TIME_Q_RE.search(t))
+
+
+# AI 客套尾巴：模型爱在结尾加「希望帮到你」之类的服务型话术，
+# 真人朋友说话不会有这些——发出去一眼就是 AI，直接剥掉。
+_AI_TAIL_RES = (
+    r"(希望|但愿)(这个|这些|以上)?[^。！！～~\n]{0,12}(能)?(帮到|有帮助|对你有用|有用)[^。！！～~\n]{0,6}[。！!～~]?\s*$",
+    r"如果(你)?(还有|有)(什么)?(问题|疑问|不懂的)[^。\n]{0,16}(问我|找我|问我哦|问我吧)[。！!～~]?\s*$",
+    r"(随时|欢迎)(问我|来问我|找我|问我哦)[。！!～~]?\s*$",
+    r"祝你[^。\n]{1,14}(愉快|开心|顺利)[。！!～~]?\s*$",
+    r"(以上|这些)就是[^。\n]{0,10}(答案|内容|解释)[。！!～~]?\s*$",
+)
+
+
+def strip_ai_tail(text: str) -> str:
+    """剥掉模型回复结尾的 AI 客套尾巴（最多剥两层）。"""
+    for _ in range(2):
+        stripped = text.rstrip()
+        after = stripped
+        for pat in _AI_TAIL_RES:
+            after = re.sub(pat, "", after).rstrip()
+            after = re.sub(r"[，,、]\s*$", "", after).rstrip()
+        if after == stripped:
+            break
+        text = after
+    return text

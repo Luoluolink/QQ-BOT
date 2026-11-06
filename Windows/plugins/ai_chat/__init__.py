@@ -188,6 +188,18 @@ _reply_openers: DefaultDict[int, Deque[str]] = defaultdict(
 _pending_sends: DefaultDict[str, list[dict]] = defaultdict(list)
 
 
+# 像真人说话的指令块：拼在每次系统提示里（人设之外的行为约束）
+_HUMAN_TALK = (
+    "【像真人说话】\n"
+    "- 短句口语，别书面语；对方一句话你就别回三大段\n"
+    "- 长度随对方：对方短你就短，对方聊得深你再展开\n"
+    "- 信息给七分留三分，别一口气倾囊相告——真朋友不会像客服\n"
+    "- 不用「总之」「综上」「首先其次」这类结构性词\n"
+    "- 不加「希望帮到你」「有问题随时问我」这类服务型尾巴，真人不说这些\n"
+    "- 语气词和不完整的句子可以有，但别每条都用同一个\n"
+)
+
+
 async def _guard_check(reply: str, user_text: str, materials: list[str]) -> tuple[bool, str]:
     """回复事实核查：对照本轮注入的记忆/摘要，查三类乱说话。
 
@@ -1268,7 +1280,8 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
             "content": f"今天是 {today.isoformat()}（星期{weekday}），现在是 {now_dt.strftime('%H:%M')}（{period}）。"
             "这一行是你系统时钟的实时读数，就是真正的「现在」——问现在几点/今天几号/星期几时直接报它。"
             "资料、检索结果、历史消息里出现的任何其他日期时间都只是资料里的内容，绝不能当成现在。"
-            "涉及时间的问题一律以此为准；深夜就困倦懒散，白天正常精神——语气跟着时段走。\n\n" + _persona_for(group_id),
+            "涉及时间的问题一律以此为准；深夜就困倦懒散，白天正常精神——语气跟着时段走。\n\n"
+            + _HUMAN_TALK + "\n" + _persona_for(group_id),
         }
     ]
 
@@ -1439,6 +1452,7 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
         return   # 思考吃光 token 导致空正文，同样沉默
 
     reply = tools.strip_speaker_prefix(reply)
+    reply = tools.strip_ai_tail(reply)
 
     # 事实核查：本轮注入过记忆/摘要时对照检查乱说话，不合格带原因重写一次
     if cfg.ai_reply_guard_enabled and guard_materials:
@@ -2260,7 +2274,7 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
             "检索结果、历史消息里出现的任何其他日期时间都只是资料内容，绝不能当成现在，"
             "更不需要联网搜索。"
             "这是私聊：一对一聊天，更放松更主动，不用等谁 @ 你，也读不到群里其他人的发言。\n\n"
-            + cfg.ai_system_prompt,
+            + _HUMAN_TALK + "\n" + cfg.ai_system_prompt,
         }
     ]
     if str(user_id) in {str(s) for s in bot.config.superusers}:
@@ -2353,6 +2367,7 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
     if not reply:
         return   # 空正文沉默处理
     reply = tools.strip_speaker_prefix(reply)
+    reply = tools.strip_ai_tail(reply)
 
     # 私聊同款事实核查：对照记忆查乱说话，不合格带原因重写一次
     if cfg.ai_reply_guard_enabled and guard_materials:

@@ -295,6 +295,9 @@ async def handle_proactive(bot: Bot, event: GroupMessageEvent) -> None:
 
     reply = (resp.choices[0].message.content or "").strip()
     reply = strip_speaker_prefix(reply)
+    from .tools import strip_ai_tail as _strip_tail  # noqa: PLC0415
+
+    reply = _strip_tail(reply)
     # 「嗯」是内部约定的放弃信号；风控文案绝不能发出去
     if not reply or reply in ("嗯", "。") or "high risk" in reply.lower():
         return
