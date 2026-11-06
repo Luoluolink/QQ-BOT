@@ -709,6 +709,10 @@ def _pick_candidates(lines: list[str], top: int = 3) -> list[list[tuple[str, str
             texts = [t for _, t in win]
             if len(set(texts)) < len(texts):
                 fun += 1.0   # 复读/接龙是群名场面
+            # 时效加权：位置越靠后（越新）加分越多，但只是加分不是门槛——
+            # 老片段足够有趣（分差拉开）依然会赢，符合「新的优先、有趣破例」
+            recency = (i + size / 2) / max(1, len(parsed))
+            fun += recency * cfg.ai_imagegen_comic_recency
             cands.append((fun, i, win))
     cands.sort(key=lambda e: -e[0])
     picked: list[list[tuple[str, str]]] = []

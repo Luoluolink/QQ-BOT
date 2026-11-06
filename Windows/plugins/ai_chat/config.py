@@ -1289,6 +1289,9 @@ class Config(BaseModel):
     # 群聊四格漫画的画质档（low/medium/high）。漫画要写气泡文字，
     # low 的字会糊，默认 medium；high 更精细但单张成本更高
     ai_imagegen_comic_quality: str = "medium"
+    # 选段的时效加成：越新的聊天窗口加分越多（最大约 +1×此值），
+    # 但只是加分不是门槛——老片段足够有趣（分差拉开约 1.5 分以上）依然会被选中
+    ai_imagegen_comic_recency: float = 2.0
 
     # ---------- 情绪与自动记忆 ----------
     # 情绪状态机：被夸/被怼/被戳/被道谢等事件推动每组一个会衰减的心情，
