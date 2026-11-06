@@ -2215,6 +2215,11 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
     if quote:
         text = f"{quote}\n{text}" if text else quote
 
+    # 私聊也能让机器人发空间（只开放说说；漫画分享是群场景）。
+    # 放在额度检查之前——这是个明确指令，不该吃私聊聊天额度
+    if re.search(r"(发|更新|写|来).{0,3}(条|个|下|篇)?(说说|空间)|空间心情", text.strip()):
+        await private_chat.finish(await qzone.handle_mood_request(bot, 0))
+
     # 私聊情绪与自动记忆：键取负 user_id，和群聊的记忆库互不干扰
     if cfg.ai_mood_enabled:
         mood.react_to_text(-user_id, text)

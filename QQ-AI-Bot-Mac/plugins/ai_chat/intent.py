@@ -176,15 +176,7 @@ async def _exec_comic(bot: Bot, event: GroupMessageEvent, args: dict, is_admin: 
 async def _exec_qzone_mood(bot: Bot, event: GroupMessageEvent, args: dict, is_admin: bool) -> str | None:
     from . import qzone  # noqa: PLC0415
 
-    if qzone.quota_left() <= 0:
-        return "今天发空间的次数用完了，明天再来吧"
-    text = await qzone.compose_mood(bot, event.group_id)
-    if not text:
-        return "心情还没酝酿好，等会儿再试一次？"
-    ok, note = await qzone.post_mood(bot, text)
-    if ok:
-        return f"发到空间了：\n{text}"
-    return f"空间发失败了（{note}），内容我先留着：\n{text}"
+    return await qzone.handle_mood_request(bot, event.group_id)
 
 
 @_action(

@@ -91,8 +91,10 @@ async def _handle_record(bot: Bot, event: GroupMessageEvent) -> None:
     if event.user_id == int(event.self_id):
         return
     from . import reminders as _reminders  # noqa: PLC0415
+    from . import qzone as _qzone  # noqa: PLC0415
 
     _reminders.start_checker()   # 幂等：只在第一次真正创建检查任务
+    _qzone.start_auto_loop()   # 空间自动心情，同款幂等懒启动
     sender = event.sender
     speaker = speaker_tag(
         getattr(sender, "card", "") or "", getattr(sender, "nickname", "") or "",

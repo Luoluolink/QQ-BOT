@@ -1325,6 +1325,22 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
         if used_win:
             _mark_comic_used(used_win)
         _last_comic[gid] = image
+        # 自动分享：模型判断值不值得发空间，值得就后台发（配额内）
+        if cfg.ai_qzone_auto_share_comic:
+            async def _auto_share() -> None:
+                try:
+                    from . import qzone as _qzone  # noqa: PLC0415
+
+                    if not await _qzone.comic_worth_sharing(bot, board):
+                        logger.info("[ai_chat] 漫画自动分享判定：不值得发，跳过")
+                        return
+                    topic = str(board.get("topic") or "群聊小剧场")
+                    ok, note = await _qzone.share_comic(bot, image, topic)
+                    logger.info(f"[ai_chat] 漫画自动分享空间: {ok} {note}")
+                except Exception as exc:  # noqa: BLE001
+                    logger.info(f"[ai_chat] 漫画自动分享失败: {exc!r}")
+
+            asyncio.create_task(_auto_share())
         logger.info(f"[ai_chat] 群聊四格漫画已发出（{len(image) // 1024}KB）")
         return True
     finally:
