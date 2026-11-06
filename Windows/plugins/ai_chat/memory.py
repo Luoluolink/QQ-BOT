@@ -229,6 +229,12 @@ async def maybe_auto_extract(group_id: int) -> None:
         facts = await _extract_facts(group_id, lines)
         for fact in facts:
             add(group_id, fact, by="自动记忆")
+            # 事实以「名字(QQ号)」标记开头，解析出 QQ 号把这条事实同时
+            # 挂到人物档案上——记忆才能跨群跟着人走
+            if cfg.ai_memory_user_enabled:
+                m = re.search(r"[（(](\d{4,12})[)）]", fact)
+                if m:
+                    uadd(int(m.group(1)), fact)
         _last_auto[group_id] = time.time()
         _daily[(str(group_id), today)] = _daily.get((str(group_id), today), 0) + 1
         buf.clear()
@@ -270,3 +276,76 @@ async def _extract_facts(group_id: int, lines: list[str]) -> list[str]:
         if isinstance(item, str) and item.strip():
             out.append(" ".join(item.split())[:120])
     return out[:3]
+
+
+# ---------------------------------------------------------------- 跨群人物记忆
+#
+# 群记忆按群隔离：同一个人在 A 群被记下的事，到 B 群/私聊就「失忆」。
+# 这里补一层按 QQ 号跟随人的档案：自动提取出的事实以「名字(QQ号)」标记
+# 开头（提取提示词如此要求），解析出 QQ 号把事实同时挂到人物档案
+# （data/user_memory.json）上，之后这个人无论在哪个群、还是私聊，
+# 都能被想起来。群内的梗和事件仍留在群记忆里，不跟人走。
+
+_USER_STATE_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "data" / "user_memory.json"
+)
+_users: dict[str, list[dict[str, Any]]] | None = None
+
+
+def _uload() -> dict[str, list[dict[str, Any]]]:
+    global _users
+    if _users is None:
+        try:
+            raw = json.loads(_USER_STATE_PATH.read_text(encoding="utf-8"))
+            _users = raw if isinstance(raw, dict) else {}
+        except (OSError, ValueError):
+            _users = {}
+    return _users
+
+
+def _usave() -> None:
+    try:
+        _USER_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _USER_STATE_PATH.write_text(
+            json.dumps(_users or {}, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def user_count(user_id: int) -> int:
+    return len(_uload().get(str(user_id), []))
+
+
+def uadd(user_id: int, text: str, max_entries: int = 80) -> str:
+    """把一条跨群事实挂到某个 QQ 号的人物档案上。返回 'ok' / 'dup'。"""
+    text = " ".join(text.split())
+    if not text:
+        return "empty"
+    items = _uload().setdefault(str(user_id), [])
+    if any(e["text"] == text for e in items):
+        return "dup"
+    items.append(
+        {
+            "text": text,
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        }
+    )
+    while len(items) > max_entries:
+        items.pop(0)
+    _usave()
+    return "ok"
+
+
+def udescribe(user_id: int, limit: int = 6) -> str:
+    """这个人的跨群记忆注入块。没有档案返回空串。"""
+    items = _uload().get(str(user_id), [])
+    if not items:
+        return ""
+    lines = [f"- {e['text']}" for e in items[-limit:]]
+    return (
+        "【跨群记忆】以下是这个人（按 QQ 号）在其他群或私聊里被记下的事，"
+        "回答时可以自然引用，但要像「我记得你」那样带出来，"
+        "而不是「我查了档案」；拿不准的细节不要编：\n" + "\n".join(lines)
+    )

@@ -1299,6 +1299,9 @@ class Config(BaseModel):
     ai_memory_auto_cooldown: int = 600
     # 每群每天最多提取几次（每次最多记 3 条）
     ai_memory_auto_daily: int = 6
+    # 跨群人物记忆：提取出的事实按 QQ 号挂到人物档案，这个人换群/私聊
+    # 也能被想起来。关掉则记忆严格按群隔离
+    ai_memory_user_enabled: bool = True
     # 回复拆条：把长回复按句子拆成 1~3 条短消息连发（像真人打字），
     # 关掉就是整段挤在一个气泡里
     ai_reply_split: bool = True

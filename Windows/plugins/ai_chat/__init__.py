@@ -1264,6 +1264,12 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
         if mem_ctx:
             messages.append({"role": "system", "content": mem_ctx})
 
+    # 跨群人物记忆：这个人在其他群/私聊被记下的事，按 QQ 号跟过来。
+    if cfg.ai_memory_enabled and cfg.ai_memory_user_enabled:
+        user_ctx = memory.udescribe(event.user_id)
+        if user_ctx:
+            messages.append({"role": "system", "content": user_ctx})
+
     # 群聊滚动摘要注入：让机器人知道「群里最近在聊什么」，接得上梗。
     # 放在记忆之后、历史之前——摘要和记忆同级，都是背景知识，
     # 且都让位于本轮真正的检索结果（那些排在更前面）。
@@ -2139,6 +2145,11 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
         mem_ctx = memory.describe(-user_id, text, cfg.ai_memory_max_results)
         if mem_ctx:
             messages.append({"role": "system", "content": mem_ctx})
+    # 跨群人物记忆：私聊里也能想起 TA 在各个群被记下的事。
+    if cfg.ai_memory_enabled and cfg.ai_memory_user_enabled:
+        user_ctx = memory.udescribe(user_id)
+        if user_ctx:
+            messages.append({"role": "system", "content": user_ctx})
     messages.extend(_private_history[user_id])
 
     # 联网检索（client 模式）：私聊没有群资源 context，但联网照常可用
