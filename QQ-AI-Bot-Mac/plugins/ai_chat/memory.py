@@ -186,7 +186,8 @@ def describe(group_id: int, text: str, limit: int = 8) -> str:
     lines = [f"- {e['text']}" for e in picked]
     return (
         "【长期记忆】以下是之前明确要求记住的事实，回答相关问题时必须以它们为准，"
-        "记忆里没有的就说不知道，绝不能编造或混淆：\n" + "\n".join(lines)
+        "记忆里没有的就说不知道，绝不能编造或混淆；"
+        "每条开头的说话人标记指明了这是谁的事，不要张冠李戴：\n" + "\n".join(lines)
     )
 
 
