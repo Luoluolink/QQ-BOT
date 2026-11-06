@@ -247,3 +247,23 @@ def split_reply_bubbles(reply: str, max_bubbles: int = 3) -> list[str]:
     if rest:
         bubbles[-1] += rest
     return bubbles
+
+
+# 说话人标记前缀：上下文里的聊天记录都带「【名字(QQ号)】」格式，
+# 模型偶尔会照猫画虎把自己的回复也标上这个头。发出去很怪，直接剥掉。
+_SPEAKER_PREFIX_RES = (
+    r"^\s*【[^】]{1,16}】\s*[（(]?\d{2,12}[)）]?\s*[：:]?\s*",
+    r"^\s*[^：:\n【】]{1,16}[（(]\d{2,12}[)）]\s*[：:]\s*",
+)
+
+
+def strip_speaker_prefix(text: str) -> str:
+    """剥掉模型回复开头误抄的说话人标记（【吉普莉尔】(123) / 吉普莉尔(123)：）。"""
+    for _ in range(2):   # 最多剥两层，防连抄两个标记
+        stripped = text
+        for pat in _SPEAKER_PREFIX_RES:
+            stripped = re.sub(pat, "", stripped, count=1)
+        if stripped == text:
+            break
+        text = stripped.strip()
+    return text

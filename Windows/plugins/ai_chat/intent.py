@@ -151,7 +151,7 @@ async def _exec_comic(bot: Bot, event: GroupMessageEvent, args: dict, is_admin: 
         return None   # 生图没开：退回普通聊天，让模型自己圆场
     if imagegen.quota_left() <= 0:
         return "今天画画配额用完了，明天再来吧"
-    if not imagegen.has_comic_material(event.group_id):
+    if not imagegen.has_comic_material(event.group_id) and not digest.current(event.group_id):
         return "刚才的聊天还没攒出能画的一段，先聊会儿天再来找我"
     asyncio.create_task(imagegen.generate_comic_from_chat(bot, event))
     return "在画了——先挑段有意思的聊天，再描个分镜，稍等"

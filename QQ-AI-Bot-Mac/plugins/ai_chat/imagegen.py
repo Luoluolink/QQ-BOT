@@ -735,27 +735,10 @@ def quota_left() -> int:
     return max(0, cfg.ai_imagegen_daily_limit - _usage.get("global", 0))
 
 
-async def _comic_storyboard(cands: list[list[tuple[str, str]]]) -> dict | None:
-    """模型当编辑：挑候选 + 写四格分镜。失败返回 None。"""
+async def _llm_panels_json(prompt: str) -> dict | None:
+    """分镜 LLM 调用公共体：JSON 截取 + 失败加倍 max_tokens 重试。"""
     from .ai_client import chat_kwargs, make_client  # noqa: PLC0415
 
-    blocks = []
-    for idx, win in enumerate(cands, 1):
-        body = "\n".join(f"【{s}】{t}" for s, t in win)
-        blocks.append(f"候选{idx}：\n{body}")
-    prompt = (
-        "你是四格漫画编辑。下面是几个群聊片段，挑最有喜剧张力的一个，"
-        "改编成四格漫画分镜。台词必须贴合原话的意思和语气，"
-        "可以调整顺序、轻度润色，但不得无中生有；每格气泡台词不超过 18 字。\n"
-        "重要：每格的 who 必须是这句台词原本的说话人，绝不能互换角色——"
-        "漫画会把头像画成这个人，换人=张冠李戴。\n"
-        '只输出 JSON（不要任何其他文字）：\n'
-        '{"pick": 候选编号, "topic": "一句话主题", '
-        '"panels": [{"who": "说话人名字(可空)", "scene": "画面动作描述，不要出现文字", '
-        '"bubble": "气泡台词，可为空串"}]}，panels 固定 4 个元素。\n'
-        "who 只能填片段里出现过的说话人名字（不含括号里的号码）。\n\n"
-        + "\n\n".join(blocks)
-    )
     client = make_client(cfg.ai_api_key, cfg.ai_api_base, cfg.ai_proxy)
     last_exc: Exception | None = None
     for cap in (1600, 3200):   # MiMo 开着思考：小预算会被思考吃光导致正文为空，
@@ -784,6 +767,47 @@ async def _comic_storyboard(cands: list[list[tuple[str, str]]]) -> dict | None:
             last_exc = exc
     logger.info(f"[ai_chat] 漫画分镜生成失败（静默）: {last_exc!r}")
     return None
+
+
+async def _comic_storyboard(cands: list[list[tuple[str, str]]]) -> dict | None:
+    """模型当编辑：挑候选 + 写四格分镜。失败返回 None。"""
+    blocks = []
+    for idx, win in enumerate(cands, 1):
+        body = "\n".join(f"【{s}】{t}" for s, t in win)
+        blocks.append(f"候选{idx}：\n{body}")
+    prompt = (
+        "你是四格漫画编辑。下面是几个群聊片段，挑最有喜剧张力的一个，"
+        "改编成四格漫画分镜。台词必须贴合原话的意思和语气，"
+        "可以调整顺序、轻度润色，但不得无中生有；每格气泡台词不超过 18 字。\n"
+        "重要：每格的 who 必须是这句台词原本的说话人，绝不能互换角色——"
+        "漫画会把头像画成这个人，换人=张冠李戴。\n"
+        '只输出 JSON（不要任何其他文字）：\n'
+        '{"pick": 候选编号, "topic": "一句话主题", '
+        '"panels": [{"who": "说话人名字(可空)", "scene": "画面动作描述，不要出现文字", '
+        '"bubble": "气泡台词，可为空串"}]}，panels 固定 4 个元素。\n'
+        "who 只能填片段里出现过的说话人名字（不含括号里的号码）。\n\n"
+        + "\n\n".join(blocks)
+    )
+    return await _llm_panels_json(prompt)
+
+
+async def _comic_storyboard_from_digest(digest_ctx: str) -> dict | None:
+    """ambient 太薄（如刚重启，内存缓冲被清）时退而求其次：拿滚动摘要编小剧场。
+
+    摘要没有带号码的原文，所以这条路画不出头像——角色按普通 Q 版处理。
+    """
+    prompt = (
+        "你是四格漫画编剧。下面是一个 QQ 群今晚的聊天话题摘要，"
+        "据此编一段贴合话题的四格漫画小剧场：主题必须来自摘要，"
+        "可以轻度演绎但不得涉及敏感内容；每格气泡台词不超过 18 字。\n"
+        '只输出 JSON（不要任何其他文字）：\n'
+        '{"topic": "一句话主题", '
+        '"panels": [{"who": "角色名(可空)", "scene": "画面动作描述，不要出现文字", '
+        '"bubble": "气泡台词，可为空串"}]}，panels 固定 4 个元素。\n'
+        'who 用摘要里出现过的名字，没有就用「甲」「乙」这样的通称。\n\n'
+        f"摘要：{digest_ctx[:300]}"
+    )
+    return await _llm_panels_json(prompt)
 
 
 def _img_bytes(obj) -> bytes | None:
@@ -869,11 +893,19 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
     from . import ambient  # noqa: PLC0415
 
     cands = _pick_candidates(ambient.recent_lines(gid, limit=40))
+    digest_ctx = ""
     if not cands:
-        return False
+        # ambient 是内存缓冲，重启就清空——太薄时退用滚动摘要当素材
+        from . import digest as digest_mod  # noqa: PLC0415
+
+        digest_ctx = digest_mod.current(gid)
+        if not digest_ctx:
+            return False
     _COMIC_INFLIGHT.add(gid)
     try:
-        board = await _comic_storyboard(cands)
+        board = await (
+            _comic_storyboard(cands) if cands else _comic_storyboard_from_digest(digest_ctx)
+        )
         if not board:
             return False
         if not _take_quota():

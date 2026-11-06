@@ -35,7 +35,7 @@ from nonebot.rule import Rule
 
 from . import ambient, digest, followup, imagegen
 from .config import Config
-from .tools import at_me, speaker_tag
+from .tools import at_me, speaker_tag, strip_speaker_prefix
 
 __plugin_meta__ = PluginMetadata(
     name="主动发言",
@@ -288,6 +288,7 @@ async def handle_proactive(bot: Bot, event: GroupMessageEvent) -> None:
         return
 
     reply = (resp.choices[0].message.content or "").strip()
+    reply = strip_speaker_prefix(reply)
     # 「嗯」是内部约定的放弃信号；风控文案绝不能发出去
     if not reply or reply in ("嗯", "。") or "high risk" in reply.lower():
         return

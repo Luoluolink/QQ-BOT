@@ -1289,7 +1289,9 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
                         "【群聊近况】以下是这个群最近在聊的内容的摘要，"
                         "仅供你理解上下文、接得住话题。它不是本轮问题的答案，"
                         "回答时要以本轮的检索结果和对方的问题为准，"
-                        "不要编造摘要里没有细节，也不要主动复述摘要：\n"
+                        "不要编造摘要里没有细节，也不要主动复述摘要。"
+                        "摘要里的话题是群友们聊的——绝不能把摘要里提到的事"
+                        "说成是你自己做的、你分析的、你查的：\n"
                         f"{digest_ctx}"
                     ),
                 }
@@ -1361,6 +1363,8 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
             f"reasoning_effort={cfg.ai_reasoning_effort!r}, usage={resp.usage}"
         )
         return   # 思考吃光 token 导致空正文，同样沉默
+
+    reply = tools.strip_speaker_prefix(reply)
 
     # 口癖记录：留这条回复的起头，给下次的口癖自查用（此时 reply 已定稿）
     _reply_openers[group_id].append(reply[:2])
@@ -2218,6 +2222,7 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
     reply = (resp.choices[0].message.content or "").strip()
     if not reply:
         return   # 空正文沉默处理
+    reply = tools.strip_speaker_prefix(reply)
 
     _demote_image_content(_private_history[user_id])
     _private_history[user_id].append({"role": "user", "content": user_content})
