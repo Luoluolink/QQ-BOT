@@ -1265,16 +1265,19 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
         {
             "role": "system",
             "content": f"今天是 {today.isoformat()}（星期{weekday}），现在是 {now_dt.strftime('%H:%M')}（{period}）。"
+            "这一行是你系统时钟的实时读数，就是真正的「现在」——问现在几点/今天几号/星期几时直接报它。"
+            "资料、检索结果、历史消息里出现的任何其他日期时间都只是资料里的内容，绝不能当成现在。"
             "涉及时间的问题一律以此为准；深夜就困倦懒散，白天正常精神——语气跟着时段走。\n\n" + _persona_for(group_id),
         }
     ]
 
     # 是否允许联网：关键词命中（或配置 always）。提前算——client 模式要靠它
-    # 决定要不要在注入上下文前先跑一轮检索。
+    # 决定要不要在注入上下文前先跑一轮检索。问当前时间/日期的永远不搜：
+    # 系统提示里就有真实时钟，搜回来只会是校时网站列表（实测让模型说「答不上来」）
     allow_search = cfg.ai_web_search_enabled and (
         cfg.ai_web_search_trigger == "always"
         or websearch.looks_like_web_query(text)
-    )
+    ) and not tools.is_time_question(text)
 
     context = await _build_context(bot, group_id, text, at_qqs, event.self_id)
     if context:
@@ -1384,6 +1387,17 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
         mode=cfg.ai_vision_image_mode,
     )
     messages.append({"role": "user", "content": user_content})
+
+    # 时钟最终提醒：放在用户消息之后——检索资料/历史里混进的其他日期
+    # （mock 和真实群都出现过）经常把模型带偏，最后一条 system 最压得住
+    messages.append({
+        "role": "system",
+        "content": (
+            f"【当前时刻】{now_dt.strftime('%Y-%m-%d %H:%M')}（星期{weekday}，{period}）。"
+            "回答「现在/今天/几点」类问题时以此为准；"
+            "任何资料、记录里出现的其他日期时间都只是资料内容。"
+        ),
+    })
 
     _t0 = time.time()
     try:
@@ -2236,6 +2250,9 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
         {
             "role": "system",
             "content": f"今天是 {today.isoformat()}（星期{weekday}），现在是 {now_dt.strftime('%H:%M')}（{period}）。"
+            "这一行是你系统时钟的实时读数，就是真正的「现在」——问现在几点/今天几号/星期几时直接报它；"
+            "检索结果、历史消息里出现的任何其他日期时间都只是资料内容，绝不能当成现在，"
+            "更不需要联网搜索。"
             "这是私聊：一对一聊天，更放松更主动，不用等谁 @ 你，也读不到群里其他人的发言。\n\n"
             + cfg.ai_system_prompt,
         }
@@ -2267,7 +2284,7 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
     allow_search = cfg.ai_web_search_enabled and (
         cfg.ai_web_search_trigger == "always"
         or websearch.looks_like_web_query(text)
-    )
+    ) and not tools.is_time_question(text)   # 时间问题用系统时钟答，不联网
     search_ctx = ""
     if allow_search and cfg.ai_web_search_mode == "client":
         if websearch.exhausted(cfg.ai_web_search_daily_limit):
@@ -2295,6 +2312,17 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
         mode=cfg.ai_vision_image_mode,
     )
     messages.append({"role": "user", "content": user_content})
+
+    # 时钟最终提醒：放在用户消息之后——检索资料/历史里混进的其他日期
+    # （mock 和真实群都出现过）经常把模型带偏，最后一条 system 最压得住
+    messages.append({
+        "role": "system",
+        "content": (
+            f"【当前时刻】{now_dt.strftime('%Y-%m-%d %H:%M')}（星期{weekday}，{period}）。"
+            "回答「现在/今天/几点」类问题时以此为准；"
+            "任何资料、记录里出现的其他日期时间都只是资料内容。"
+        ),
+    })
 
     _t0 = time.time()
     try:

@@ -24,7 +24,7 @@ import asyncio
 import random
 import time
 from collections import defaultdict, deque
-from datetime import date
+from datetime import date, datetime
 from typing import DefaultDict, Deque, Dict
 
 from nonebot import get_plugin_config, logger, on_message
@@ -234,6 +234,12 @@ async def handle_proactive(bot: Bot, event: GroupMessageEvent) -> None:
 
     today = date.today()
     weekday = "一二三四五六日"[today.weekday()]
+    now_dt = datetime.now()
+    # 主动发言也带上时刻：深夜插话的语气要和「现在 02:40」对得上
+    time_line = (
+        f"今天的日期是 {today.isoformat()}（星期{weekday}），"
+        f"现在是 {now_dt.strftime('%H:%M')}。"
+    )
     # ambient 记录器（priority=65）晚于本 handler（60）执行，触发消息还没进
     # 缓冲，正好不重复——触发消息在下面单独拼进提示词
     context_lines = ambient.recent_lines(group_id, limit=8)
@@ -247,7 +253,7 @@ async def handle_proactive(bot: Bot, event: GroupMessageEvent) -> None:
         {
             "role": "system",
             "content": (
-                f"今天的日期是 {today.isoformat()}（星期{weekday}）。\n\n"
+                f"{time_line}\n\n"
                 + cfg.ai_system_prompt
                 + "\n\n【当前情境】群友们在聊天，没有人 @ 你，但消息提到了与你相关的词。"
                 "你可以插话，但必须克制：只说一句、40 字以内、直接接住当前话题。"

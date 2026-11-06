@@ -267,3 +267,19 @@ def strip_speaker_prefix(text: str) -> str:
             break
         text = stripped.strip()
     return text
+
+
+# 当前时间/日期类问题：系统提示里就有真实时钟，不需要联网也绝不该联网——
+# 搜回来的是校时网站列表而不是时间，模型反而会说「答不上来」（实测踩过）
+_TIME_Q_RE = re.compile(
+    r"现在(几点|什么时间|时间)|几点(了|呢|啊|呀)\s*[?？]?\s*$"
+    r"|今天(是)?(几号|几日|什么日子|日期|星期|周几)|星期几|周几|几点钟了"
+)
+
+
+def is_time_question(text: str) -> bool:
+    """是不是在问当前时间/日期——这类问题用注入的系统时钟直接答。"""
+    t = text.strip()
+    if not t or len(t) > 30:
+        return False
+    return bool(_TIME_Q_RE.search(t))
