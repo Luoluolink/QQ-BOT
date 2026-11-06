@@ -179,6 +179,10 @@ _history: DefaultDict[int, Deque[dict]] = defaultdict(
     lambda: deque(maxlen=cfg.ai_history_rounds * 2)
 )
 # 最近回复的起头方式（口癖自查用）：每群留最近 3 条的开头
+# 每群最近一次 @ 对话来自谁：(时间, user_id)——决定回复要不要挂引用
+_last_chat_from: DefaultDict[int, tuple[float, int]] = defaultdict(
+    lambda: (0.0, 0)
+)
 _reply_openers: DefaultDict[int, Deque[str]] = defaultdict(
     lambda: deque(maxlen=3)
 )
@@ -197,6 +201,8 @@ _HUMAN_TALK = (
     "- 不用「总之」「综上」「首先其次」这类结构性词\n"
     "- 不加「希望帮到你」「有问题随时问我」这类服务型尾巴，真人不说这些\n"
     "- 语气词和不完整的句子可以有，但别每条都用同一个\n"
+    "- 群聊回复默认一两句话；括号里的神态动作描写（如「（微微歪头）」）"
+    "群聊里基本别用，最多偶尔一次\n"
 )
 
 
@@ -1512,17 +1518,29 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
         digest.maybe_compress(group_id)
 
     # 拆条连发：按句子把回复拆成 1~3 条短消息，像真人打字那样分开发。
-    # 引用只挂第一条，链接卡片和表情包挂最后一条，中间带小间隔。
     bubbles = tools.split_reply_bubbles(reply) if cfg.ai_reply_split else [reply]
     sticker = await _maybe_sticker(bot, text, group_id)
+
+    # 拟人延迟：真人打字要时间，长回复更久——秒回的机器感很重
+    await asyncio.sleep(min(0.8 + len(reply) * 0.02, 4.0) + random.uniform(0.3, 1.2))
 
     for idx, bubble in enumerate(bubbles):
         last = idx == len(bubbles) - 1
         segments: list = []
         plain: list = []
+        # 引用要克制：真人不在群里每句话都引用对方。只在两种情况挂：
+        # 对方自己用了引用（在回某条具体消息），或上一条不是这人说的
+        # （隔了几句，不引用会看不出在回谁）。连着对话就不挂。
         if idx == 0 and cfg.ai_reply_quote:
-            segments.append(MessageSegment.reply(event.message_id))
-            plain.append(MessageSegment.reply(event.message_id))
+            prev_ts, prev_uid = _last_chat_from.get(group_id, (0.0, 0))
+            consecutive = (
+                prev_uid == event.user_id and time.time() - prev_ts < 600
+            )
+            has_reply_seg = any(seg.type == "reply" for seg in event.message)
+            if has_reply_seg or not consecutive:
+                segments.append(MessageSegment.reply(event.message_id))
+                plain.append(MessageSegment.reply(event.message_id))
+        _last_chat_from[group_id] = (time.time(), event.user_id)
         # 链接转卡片：回复里的 B 站/网页链接自动变成分享卡片，失败退回纯文本
         segments.extend(await crawler.linkify(bubble, proxy=cfg.ai_crawler_youtube_proxy))
         plain.append(MessageSegment.text(bubble))
@@ -2409,6 +2427,8 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
 
     asyncio.create_task(memory.maybe_auto_extract(-user_id))
 
+    # 拟人延迟：私聊同样别秒回
+    await asyncio.sleep(min(0.8 + len(reply) * 0.02, 4.0) + random.uniform(0.3, 1.2))
     # 私聊同样拆条连发：一对一聊天里大段落更显得像报告
     bubbles = tools.split_reply_bubbles(reply) if cfg.ai_reply_split else [reply]
     sticker = await _maybe_sticker(bot, text, -user_id)
