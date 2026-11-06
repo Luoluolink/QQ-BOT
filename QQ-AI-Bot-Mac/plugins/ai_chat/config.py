@@ -1295,6 +1295,9 @@ class Config(BaseModel):
     # QQ空间发帖每日上限（发说说/分享漫画合计）。公开行为要克制，
     # 刷屏是风控最爱的行为模式
     ai_qzone_daily_limit: int = 3
+    # 空间桥接服务（qzone-bridge，独立进程）地址：发说说走它的
+    # OneBot v11 HTTP 接口，与 NapCat 无关
+    ai_qzone_bridge: str = "http://127.0.0.1:5700"
     # 每天自动发一条空间心情（随机时段，像真人不是打卡）
     ai_qzone_auto_mood: bool = True
     # 生成的漫画经模型判定有趣后自动发空间

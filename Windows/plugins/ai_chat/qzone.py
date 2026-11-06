@@ -11,6 +11,7 @@ API：NapCat 扩展 set_qq_mood（发表说说）。带图时把图片落盘后�
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import random
 import time
@@ -108,8 +109,9 @@ async def compose_mood(bot: Bot, group_id: int = 0, hint: str = "") -> str:
 
 
 async def post_mood(bot: Bot, text: str, image: bytes | None = None) -> tuple[bool, str]:
-    """发一条说说。带图先落盘，路径失败退 file:// 再退纯文本。
+    """发一条说说：走 qzone-bridge 桥接服务的 send_msg（OneBot v11 兼容）。
 
+    带图用 CQ 码 base64 内嵌（桥接支持图片上传到空间相册）。
     返回 (成功?, 失败原因或补充说明)。
     """
     text = (text or "").strip()[:500]
@@ -118,35 +120,35 @@ async def post_mood(bot: Bot, text: str, image: bytes | None = None) -> tuple[bo
     if not _take_quota():
         return False, "今天发空间的次数用完了，明天再来吧"
 
-    tmp: Path | None = None
-    attempts: list[dict] = []
+    message = text
     if image is not None:
-        try:
-            tmp = _DATA_DIR / f"qzone_{int(time.time())}.png"
-            tmp.write_bytes(image)
-            attempts.append({"content": text, "pics": [str(tmp)]})
-            attempts.append({"content": text, "pics": [tmp.as_uri()]})
-        except OSError as exc:  # noqa: BLE001
-            logger.warning(f"[ai_chat] 说说配图落盘失败，改发纯文本: {exc!r}")
-    attempts.append({"content": text})
+        message = f"{text}[CQ:image,file=base64://{base64.b64encode(image).decode()}]"
 
-    last_err = ""
-    for params in attempts:
-        try:
-            await bot.call_api("set_qq_mood", **params)
-            logger.info(
-                f"[ai_chat] 空间说说已发（带图={'pics' in params}）: {text[:40]}"
-            )
-            return True, "带图" if params.get("pics") else "纯文字"
-        except Exception as exc:  # noqa: BLE001
-            last_err = repr(exc)
-            logger.warning(f"[ai_chat] set_qq_mood 尝试失败: {last_err[:160]}")
-    if tmp is not None:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
-    return False, last_err[:120]
+    import asyncio  # noqa: PLC0415
+    import json as _json  # noqa: PLC0415
+    import urllib.request  # noqa: PLC0415
+
+    def _post_bridge() -> dict:
+        req = urllib.request.Request(
+            f"{cfg.ai_qzone_bridge}/send_msg",
+            data=_json.dumps({"message": message}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return _json.loads(r.read().decode("utf-8", "replace"))
+
+    try:
+        body = await asyncio.to_thread(_post_bridge)
+    except Exception as exc:  # noqa: BLE001
+        return False, f"空间桥接连不上（{exc!r:.80}）"
+    retcode = body.get("retcode")
+    if body.get("status") == "ok" or retcode in (0, 1):
+        logger.info(f"[ai_chat] 空间说说已发（bridge 带图={image is not None}）: {text[:40]}")
+        return True, "带图" if image is not None else "纯文字"
+    if retcode == 1401 or "未登录" in str(body.get("message", "")):
+        return False, "空间桥接还没登录（需要机器人账号的空间 Cookie）"
+    return False, str(body.get("message") or body)[:120]
 
 
 async def comic_worth_sharing(bot: Bot, board: dict) -> bool:
