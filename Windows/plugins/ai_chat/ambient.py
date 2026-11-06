@@ -34,10 +34,12 @@ from .tools import at_me, speaker_tag
 
 cfg = get_plugin_config(Config)
 
-# 环形缓冲长度：背景注入默认 6 条、主动发言取 8 条，20 条余量足够
-_BUF_LEN = 20
+# 环形缓冲长度：背景注入 6 条、主动发言 8 条、漫画选段最多 40 条，60 条余量够
+_BUF_LEN = 60
 
-_recent: DefaultDict[int, Deque[str]] = defaultdict(lambda: deque(maxlen=_BUF_LEN))
+_recent: DefaultDict[int, Deque[tuple[float, str]]] = defaultdict(
+    lambda: deque(maxlen=_BUF_LEN)
+)
 
 
 def record(group_id: int, speaker: str, text: str) -> None:
@@ -45,15 +47,28 @@ def record(group_id: int, speaker: str, text: str) -> None:
     text = (text or "").strip()
     if not text:
         return
-    _recent[group_id].append(f"【{speaker}】{text[:80]}")
+    import time as _time  # noqa: PLC0415
+
+    _recent[group_id].append((_time.time(), f"【{speaker}】{text[:80]}"))
 
 
 def recent_lines(group_id: int, limit: int = 8) -> list[str]:
-    """取最近 limit 条（时间正序）。"""
+    """取最近 limit 条（时间正序，不限时间范围）。"""
     buf = _recent.get(group_id)
     if not buf:
         return []
-    return list(buf)[-limit:]
+    return [line for _, line in list(buf)[-limit:]]
+
+
+def recent_lines_since(group_id: int, seconds: float, limit: int = 40) -> list[str]:
+    """取最近 seconds 秒内的记录（时间正序）——漫画选段的时间窗用。"""
+    import time as _time  # noqa: PLC0415
+
+    buf = _recent.get(group_id)
+    if not buf:
+        return []
+    cutoff = _time.time() - seconds
+    return [line for ts, line in buf if ts >= cutoff][-limit:]
 
 
 def describe(group_id: int, count: int = 6) -> str:

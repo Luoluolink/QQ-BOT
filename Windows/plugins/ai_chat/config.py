@@ -1307,6 +1307,9 @@ class Config(BaseModel):
     ai_comic_daily_limit: int = 5
     # 漫画不限次的群（逗号分隔群号），配置放 .env 不进仓库
     ai_comic_unlimited_groups: str = ""
+    # 漫画素材的时间窗（小时）：只从最近 N 小时的聊天里选段，
+    # 太老的话题不翻旧账。窗口空了会退用摘要兜底
+    ai_comic_material_hours: float = 3.0
 
     @field_validator("ai_comic_unlimited_groups", mode="before")
     @classmethod

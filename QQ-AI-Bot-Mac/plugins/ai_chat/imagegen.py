@@ -934,7 +934,18 @@ def has_comic_material(group_id: int) -> bool:
     """群里最近的聊天够不够画一段（没有就直接告诉用户先聊会儿）。"""
     from . import ambient  # noqa: PLC0415
 
-    return bool(_pick_candidates(ambient.recent_lines(group_id, limit=40)))
+    return bool(
+        _pick_candidates(_material_lines(group_id))
+    )
+
+
+def _material_lines(group_id: int) -> list[str]:
+    """漫画素材：时间窗（默认最近 3 小时）内的群聊原文。"""
+    from . import ambient  # noqa: PLC0415
+
+    return ambient.recent_lines_since(
+        group_id, cfg.ai_comic_material_hours * 3600, limit=40
+    )
 
 
 def quota_left() -> int:
@@ -1249,7 +1260,7 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
         return False
     from . import ambient  # noqa: PLC0415
 
-    cands = _pick_candidates(ambient.recent_lines(gid, limit=40))
+    cands = _pick_candidates(_material_lines(gid))
     digest_ctx = ""
     digest_fp_used = None
     if not cands:
