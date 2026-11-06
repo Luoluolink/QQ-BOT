@@ -29,6 +29,7 @@ import shutil
 import json
 import random
 import time
+import urllib.request
 from datetime import date
 from pathlib import Path
 from typing import DefaultDict, Dict
@@ -649,3 +650,298 @@ async def generate_and_send(
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[ai_chat] 图片发送失败: {exc!r}")
         return False
+
+
+# ---------------------------------------------------------------- 群聊四格漫画
+#
+# 「把刚才的聊天画成四格漫画」全链路：
+# 1. 选段（两段式）：规则滑窗海选候选对话段（便宜、可控、可解释），
+#    模型当编辑从候选里挑最好笑的——幽默是语义判断，规则到不了；
+#    但让模型扫全量聊天又贵又慢，所以只喂它得分最高的 3 段。
+# 2. 分镜：模型把选中的对话改编成 4 格（画面 + 气泡台词 + 说话人）。
+# 3. 角色锚定：说话人的 QQ 头像直接当参考图走 edits，画出来像本人；
+#    edits 失败退回纯文本生成（头像先让视觉模型写一句外形描述）。
+
+_COMIC_INFLIGHT: set[int] = set()
+
+_FUN_PAT = re.compile(
+    r"笑死|绷不住|离谱|逆天|炸裂|好活|蚌埠|太真实|真实|哈哈哈|6{2,}|？|！"
+)
+
+
+def _line_fun(text: str) -> int:
+    """单条消息的趣味信号分（0~5）。规则只负责「值得看一眼」。"""
+    score = 0
+    if _FUN_PAT.search(text):
+        score += 2
+    body = text.rstrip()
+    if body.endswith(("？", "?")):
+        score += 1      # 提问/抬杠是对话推进器
+    if body.endswith(("！", "!")):
+        score += 1
+    if 4 <= len(text) <= 60:
+        score += 1      # 长度天然适合做漫画台词
+    return score
+
+
+def _parse_ambient_line(line: str) -> tuple[str, str] | None:
+    m = re.match(r"^【(.+?)】(.*)$", line)
+    return (m.group(1), m.group(2)) if m else None
+
+
+def _pick_candidates(lines: list[str], top: int = 3) -> list[list[tuple[str, str]]]:
+    """滑动窗口海选候选对话段：≥2 人、总长合适、机器人不占主、趣味分高。"""
+    parsed = [p for p in (_parse_ambient_line(x) for x in lines) if p and p[1].strip()]
+    cands: list[tuple[float, int, list[tuple[str, str]]]] = []
+    for size in range(4, 9):
+        for i in range(0, max(0, len(parsed) - size + 1)):
+            win = parsed[i:i + size]
+            speakers = {s for s, _ in win}
+            body = sum(len(t) for _, t in win)
+            if len(speakers) < 2 or not 20 <= body <= 400:
+                continue
+            # 机器人自言自语凑的段没有对手戏
+            if sum(1 for s, _ in win if s == "我") > size // 2:
+                continue
+            fun = sum(_line_fun(t) for _, t in win) / (size ** 0.5)
+            if len(speakers) >= 3:
+                fun += 1.5   # 三人以上的互动天然有戏
+            texts = [t for _, t in win]
+            if len(set(texts)) < len(texts):
+                fun += 1.0   # 复读/接龙是群名场面
+            cands.append((fun, i, win))
+    cands.sort(key=lambda e: -e[0])
+    picked: list[list[tuple[str, str]]] = []
+    used_starts: list[int] = []
+    for _score, start, win in cands:
+        if any(abs(start - u) < 4 for u in used_starts):
+            continue     # 和已选候选重叠太多，不重复喂给模型
+        picked.append(win)
+        used_starts.append(start)
+        if len(picked) >= top:
+            break
+    return picked
+
+
+def has_comic_material(group_id: int) -> bool:
+    """群里最近的聊天够不够画一段（没有就直接告诉用户先聊会儿）。"""
+    from . import ambient  # noqa: PLC0415
+
+    return bool(_pick_candidates(ambient.recent_lines(group_id, limit=40)))
+
+
+def quota_left() -> int:
+    """今天还能画几张（给命令入口预检查，免得先应了再哑火）。"""
+    return max(0, cfg.ai_imagegen_daily_limit - _usage.get("global", 0))
+
+
+async def _comic_storyboard(cands: list[list[tuple[str, str]]]) -> dict | None:
+    """模型当编辑：挑候选 + 写四格分镜。失败返回 None。"""
+    from .ai_client import chat_kwargs, make_client  # noqa: PLC0415
+
+    blocks = []
+    for idx, win in enumerate(cands, 1):
+        body = "\n".join(f"【{s}】{t}" for s, t in win)
+        blocks.append(f"候选{idx}：\n{body}")
+    prompt = (
+        "你是四格漫画编辑。下面是几个群聊片段，挑最有喜剧张力的一个，"
+        "改编成四格漫画分镜。台词必须贴合原话的意思和语气，"
+        "可以调整顺序、轻度润色，但不得无中生有；每格气泡台词不超过 18 字。\n"
+        '只输出 JSON（不要任何其他文字）：\n'
+        '{"pick": 候选编号, "topic": "一句话主题", '
+        '"panels": [{"who": "说话人名字(可空)", "scene": "画面动作描述，不要出现文字", '
+        '"bubble": "气泡台词，可为空串"}]}，panels 固定 4 个元素。\n'
+        "who 只能填片段里出现过的说话人名字（不含括号里的号码）。\n\n"
+        + "\n\n".join(blocks)
+    )
+    client = make_client(cfg.ai_api_key, cfg.ai_api_base, cfg.ai_proxy)
+    last_exc: Exception | None = None
+    for cap in (1600, 3200):   # MiMo 开着思考：小预算会被思考吃光导致正文为空，
+        try:                   # 失败一次就加倍重试
+            resp = await client.chat.completions.create(
+                **chat_kwargs(
+                    [{"role": "user", "content": prompt}],
+                    cfg,
+                    max_tokens=cap,
+                    temperature=0.7,
+                ),
+                timeout=60,
+            )
+            reply = (resp.choices[0].message.content or "").strip()
+            # 有的模型会在正文前混思考文字：只取最外层花括号之间的 JSON
+            start, end = reply.find("{"), reply.rfind("}")
+            if start < 0 or end <= start:
+                raise ValueError(f"回复里没有 JSON：{reply[:80]!r}")
+            data = json.loads(reply[start:end + 1])
+            panels = data.get("panels") if isinstance(data, dict) else None
+            if not isinstance(panels, list) or len(panels) < 4:
+                raise ValueError(f"panels 结构不对：{str(panels)[:80]!r}")
+            data["panels"] = panels[:4]
+            return data
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+    logger.info(f"[ai_chat] 漫画分镜生成失败（静默）: {last_exc!r}")
+    return None
+
+
+def _img_bytes(obj) -> bytes | None:
+    """从生图响应对象取图片字节：中转站有时回 b64_json，有时回 url。"""
+    raw = getattr(obj, "b64_json", None)
+    if raw:
+        return base64.b64decode(raw)
+    url = getattr(obj, "url", None)
+    if url:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return resp.read(32 * 1024 * 1024)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[ai_chat] 生图结果下载失败: {exc!r}")
+    return None
+
+
+def _fetch_avatar(qq: str) -> bytes | None:
+    """拉 QQ 头像（q1.qlogo.cn 对任意 nk 都有图，拿不到会返回 html 报错页）。"""
+    for host in ("q1.qlogo.cn", "q.qlogo.cn"):
+        try:
+            req = urllib.request.Request(
+                f"https://{host}/g?b=qq&nk={qq}&s=640",
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = resp.read(4 * 1024 * 1024)
+            if data and not data.lstrip()[:1] == b"<":
+                return data
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+def _comic_prompt(board: dict, char_desc: dict[str, str]) -> str:
+    """把分镜拼成生图提示词。char_desc 是 头像外形描述（回退链用）。"""
+    parts = ["四格漫画（2x2 分格，粗描边，可爱 Q 版风格，明亮配色）"]
+    descs = "；".join(f"{name}：{d}" for name, d in char_desc.items() if d)
+    if descs:
+        parts.append(f"角色外形（四格中务必保持一致）：{descs}")
+    parts.append(f"主题：{board.get('topic') or '群聊小剧场'}")
+    for i, p in enumerate(board["panels"], 1):
+        if not isinstance(p, dict):
+            continue
+        who = str(p.get("who") or "")
+        scene = str(p.get("scene") or "").strip()
+        bubble = str(p.get("bubble") or "").strip()
+        line = f"第{i}格：{who + '——' if who else ''}{scene}"
+        if bubble:
+            line += f"；气泡文字：「{bubble}」"
+        parts.append(line)
+    parts.append(
+        "所有气泡文字必须是清晰可读的简体中文、无错别字；每格最多一个气泡，"
+        "第4格收尾要有笑点定格感。"
+    )
+    return "\n".join(parts)
+
+
+async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
+    """全流程：选段 → 分镜 → 头像参考 → 出图 → 发送。失败静默返回 False。"""
+    if not cfg.ai_imagegen_enabled or not cfg.ai_imagegen_api_key:
+        return False
+    gid = event.group_id
+    if gid in _COMIC_INFLIGHT:
+        return False
+    from . import ambient  # noqa: PLC0415
+
+    cands = _pick_candidates(ambient.recent_lines(gid, limit=40))
+    if not cands:
+        return False
+    _COMIC_INFLIGHT.add(gid)
+    try:
+        board = await _comic_storyboard(cands)
+        if not board:
+            return False
+        if not _take_quota():
+            logger.info("[ai_chat] 漫画生成：日限已用完，放弃")
+            return False
+
+        # 说话人 → QQ 号：分镜里 who 用的是名字，回原候选里对回号码
+        name2qq: dict[str, str] = {}
+        for win in cands:
+            for speaker, _ in win:
+                m = re.search(r"^(.*?)\((\d{4,12})\)", speaker)
+                if m:
+                    name2qq.setdefault(m.group(1), m.group(2))
+        chars: list[tuple[str, str]] = []   # [(名字, qq)]
+        for p in board["panels"]:
+            if not isinstance(p, dict):
+                continue
+            who = str(p.get("who") or "").strip()
+            if not who or any(who == n for n, _ in chars):
+                continue
+            qq = name2qq.get(who)
+            if qq:
+                chars.append((who, qq))
+            if len(chars) >= 2:
+                break
+
+        # 参考图：edits 多头像；失败退回「外形描述 + 纯文本生成」
+        avatars: list[tuple[str, bytes]] = []
+        for name, qq in chars:
+            raw = await asyncio.to_thread(_fetch_avatar, qq)
+            if raw:
+                avatars.append((f"{name}.png", raw))
+        char_desc: dict[str, str] = {}
+        image: bytes | None = None
+        from .ai_client import make_client  # noqa: PLC0415
+
+        client = make_client(cfg.ai_imagegen_api_key, cfg.ai_imagegen_api_base, cfg.ai_proxy)
+        prompt_plain = _comic_prompt(board, {})
+        if avatars:
+            try:
+                resp = await client.images.edit(
+                    model=cfg.ai_imagegen_model,
+                    image=[(fn, io.BytesIO(raw)) for fn, raw in avatars],
+                    prompt=prompt_plain,
+                    size="1024x1024",
+                    quality=cfg.ai_imagegen_comic_quality,
+                    n=1,
+                )
+                image = _img_bytes(resp.data[0])
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[ai_chat] 漫画头像参考 edits 失败，退回纯文本: {exc!r}")
+        if image is None and avatars:
+            from . import vision as _vision  # noqa: PLC0415
+
+            for name, qq in chars:
+                url = f"https://q1.qlogo.cn/g?b=qq&nk={qq}&s=640"
+                desc = await _vision.describe_images(bot, [{"url": url}], mode="url")
+                if desc:
+                    char_desc[name] = desc[:60]
+        if image is None:
+            try:
+                resp = await client.images.generate(
+                    model=cfg.ai_imagegen_model,
+                    prompt=_comic_prompt(board, char_desc),
+                    size="1024x1024",
+                    quality=cfg.ai_imagegen_comic_quality,
+                    n=1,
+                )
+                image = _img_bytes(resp.data[0])
+            except Exception as exc:  # noqa: BLE001
+                logger.info(f"[ai_chat] 漫画生成失败（静默）: {exc!r}")
+                return False
+
+        try:
+            await bot.send(
+                event,
+                Message(MessageSegment.image("base64://" + base64.b64encode(image).decode())),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[ai_chat] 漫画发送失败: {exc!r}")
+            return False
+        ambient.record(
+            gid, "我",
+            f"画了一张群聊四格漫画（主题：{str(board.get('topic') or '群聊小剧场')[:50]}）",
+        )
+        logger.info(f"[ai_chat] 群聊四格漫画已发出（{len(image) // 1024}KB）")
+        return True
+    finally:
+        _COMIC_INFLIGHT.discard(gid)

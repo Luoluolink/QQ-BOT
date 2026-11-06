@@ -1285,6 +1285,9 @@ class Config(BaseModel):
     # 生成过的表情包存进 stickers/generated/（文件名=主题），同主题再画
     # 直接发缓存不重新生成。目录上限 60 张挤掉最旧的
     ai_imagegen_cache: bool = True
+    # 群聊四格漫画的画质档（low/medium/high）。漫画要写气泡文字，
+    # low 的字会糊，默认 medium；high 更精细但单张成本更高
+    ai_imagegen_comic_quality: str = "medium"
 
     # ---------- 情绪与自动记忆 ----------
     # 情绪状态机：被夸/被怼/被戳/被道谢等事件推动每组一个会衰减的心情，

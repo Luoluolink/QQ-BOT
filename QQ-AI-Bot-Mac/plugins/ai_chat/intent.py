@@ -139,6 +139,25 @@ async def _exec_digest_query(bot: Bot, event: GroupMessageEvent, args: dict, is_
 
 
 @_action(
+    "comic",
+    "把最近的群聊画成四格漫画：用户说「来个四格漫画」「把刚才的聊天画成漫画」时使用",
+    "（无需参数）",
+)
+async def _exec_comic(bot: Bot, event: GroupMessageEvent, args: dict, is_admin: bool) -> str | None:
+    import asyncio  # noqa: PLC0415
+    from . import imagegen  # noqa: PLC0415
+
+    if not cfg.ai_imagegen_enabled or not cfg.ai_imagegen_api_key:
+        return None   # 生图没开：退回普通聊天，让模型自己圆场
+    if imagegen.quota_left() <= 0:
+        return "今天画画配额用完了，明天再来吧"
+    if not imagegen.has_comic_material(event.group_id):
+        return "刚才的聊天还没攒出能画的一段，先聊会儿天再来找我"
+    asyncio.create_task(imagegen.generate_comic_from_chat(bot, event))
+    return "在画了——先挑段有意思的聊天，再描个分镜，稍等"
+
+
+@_action(
     "capabilities",
     "介绍自己能做什么：用户问「你能做什么」「你会什么」「有什么功能」时使用",
     "（无需参数）",
@@ -653,6 +672,8 @@ def _fast_route(text: str) -> tuple[str, dict] | None:
         return "capabilities", {}
     if re.search(r"(群里|今晚|昨天|昨晚|今天|最近)(都)?聊了(什么|啥)|(群里)?最近(的)?话题", text):
         return "digest_query", {}
+    if re.search(r"四格漫画|(聊天|群聊|刚才).{0,8}漫画", text):
+        return "comic", {}
     return None
 
 
