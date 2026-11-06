@@ -789,8 +789,12 @@ def _pick_candidates(lines: list[str], top: int = 3) -> list[list[tuple[str, str
             # 机器人自言自语凑的段没有对手戏
             if sum(1 for s, _ in win if s == "我") > size // 2:
                 continue
-            # 该段已经画过两次：整窗排除
+            # 该段已经画过两次：整窗排除（计数持久化，重启不清）
             if any(_comic_line_use.get(_line_fp(t), 0) >= 2 for _, t in win):
+                continue
+            # 话题黑名单：命中永久屏蔽词的窗口不选
+            combined = " ".join(t for _, t in win).lower()
+            if any(kw in combined for kw in _banned_keywords):
                 continue
             fun = sum(_line_fun(t) for _, t in win) / (size ** 0.5)
             if len(speakers) >= 3:
@@ -816,23 +820,86 @@ def _pick_candidates(lines: list[str], top: int = 3) -> list[list[tuple[str, str
     return picked
 
 
+# ---- 漫画选段黑名单：话题关键词 + 行使用计数，全部持久化 ----
+# 血泪教训：行计数放内存，重启一清零，「偷Lora」那段连画了 5 遍。
+# 行级指纹计数（窗口内任一行用过 2 次整窗排除）+ 关键词永久屏蔽。
+_BLACKLIST_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "data" / "comic_blacklist.json"
+)
+_banned_keywords: set[str] = set()
+_comic_line_use: dict[str, int] = {}
+
+
+def _load_blacklist() -> None:
+    global _banned_keywords, _comic_line_use
+    try:
+        raw = json.loads(_BLACKLIST_PATH.read_text(encoding="utf-8"))
+        _banned_keywords = {
+            k.lower() for k in raw.get("keywords", []) if isinstance(k, str) and k.strip()
+        }
+        lu = raw.get("line_use", {})
+        _comic_line_use = {
+            k: v for k, v in lu.items() if isinstance(k, str) and isinstance(v, int)
+        }
+    except (OSError, ValueError):
+        pass   # 文件不存在/损坏都从空开始
+
+
+def _save_blacklist() -> None:
+    try:
+        _BLACKLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _BLACKLIST_PATH.write_text(
+            json.dumps(
+                {"keywords": sorted(_banned_keywords), "line_use": _comic_line_use},
+                ensure_ascii=False, indent=2,
+            ) + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def comic_ban_keyword(kw: str) -> bool:
+    """永久屏蔽某话题（命中窗口正文即不选）。返回是否新增。"""
+    kw = kw.strip().lower()
+    if not kw or kw in _banned_keywords:
+        return False
+    _banned_keywords.add(kw)
+    _save_blacklist()
+    return True
+
+
+def comic_unban_keyword(kw: str) -> bool:
+    """解除话题屏蔽。包含式匹配（屏蔽词是「偷lora」，说「允许画lora」也能解除）。"""
+    kw = kw.strip().lower()
+    if not kw:
+        return False
+    hits = [k for k in _banned_keywords if kw in k or k in kw]
+    if not hits:
+        return False
+    for k in hits:
+        _banned_keywords.discard(k)
+    _save_blacklist()
+    return True
+
+
+_load_blacklist()   # 模块加载即恢复关键词与行计数（跨重启）
+
+
 def _line_fp(text: str) -> str:
     """聊天行的指纹：同一段话不管窗口边界怎么滑都认得出是同一行。"""
     return " ".join(text.split())
 
 
-# 行 → 已被漫画使用的次数（内存即可：ambient 缓冲重启本来就清空）
-_comic_line_use: dict[str, int] = {}
-
-
 def _mark_comic_used(win: list[tuple[str, str]]) -> None:
-    """这段聊天被画过一次：窗口里每行的计数 +1，超长的字典裁一半。"""
+    """这段聊天被画过一次：窗口里每行的计数 +1（持久化），超长裁一半。"""
     for _, t in win:
         key = _line_fp(t)
         _comic_line_use[key] = _comic_line_use.get(key, 0) + 1
     if len(_comic_line_use) > 1000:
         for key in list(_comic_line_use)[:500]:
             _comic_line_use.pop(key, None)
+    _save_blacklist()
 
 
 def has_comic_material(group_id: int) -> bool:

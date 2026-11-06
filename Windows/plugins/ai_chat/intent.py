@@ -211,6 +211,56 @@ async def _exec_qzone_share_comic(bot: Bot, event: GroupMessageEvent, args: dict
 
 
 @_action(
+    "comic_ban",
+    "永久屏蔽某个话题的四格漫画：用户说「以后别画XX」「别再画XX了」时使用",
+    "text（用户原话）",
+)
+async def _exec_comic_ban(bot: Bot, event: GroupMessageEvent, args: dict, is_admin: bool) -> str | None:
+    from . import imagegen  # noqa: PLC0415
+
+    t = str(args.get("text") or "")
+    cand = ""
+    # 三种常见说法各配一个提取式：别画在后的、话题在前的、以后别画XX的
+    for pat in (
+        r"(?:别|不要)(?:再|要)?(?:画|生成)(?:关于)?(?:「|『)?([^，。！？」』]{1,20}?)(?:」|』)?(?:相关)?(?:的)?(?:了|话题|聊天|漫画)?$",
+        r"(?:「|『)?([^，。！？」』]{1,20}?)(?:」|』)?(?:这个?|的)?(?:聊天记录|话题|段)(?:以后)?(就)?不要?再?(?:画|生成)",
+        r"以后(?:别|不要)再?(?:画|生成)(?:关于)?(.+)",
+    ):
+        m = re.search(pat, t)
+        if not m:
+            continue
+        g = m.group(1).strip(" 的了，,。！!？?「」『』")
+        if g:
+            cand = g
+            break
+    cand = cand.strip(" 的了，,。！!？?「」『』")
+    if not cand or len(cand) > 20:
+        return "要屏蔽哪个话题？比如说：以后别画偷lora的"
+    if imagegen.comic_ban_keyword(cand):
+        return f"好，以后不画「{cand}」相关的了（想解除就说：允许画{cand}）"
+    return f"「{cand}」本来就在屏蔽名单里"
+
+
+@_action(
+    "comic_unban",
+    "解除话题屏蔽：用户说「允许画XX」「解除XX屏蔽」时使用",
+    "text（用户原话）",
+)
+async def _exec_comic_unban(bot: Bot, event: GroupMessageEvent, args: dict, is_admin: bool) -> str | None:
+    from . import imagegen  # noqa: PLC0415
+
+    t = str(args.get("text") or "")
+    t = re.sub(r"^.*?(允许画|解除)", "", t)
+    t = re.sub(r"(的?漫画|的?话题|的?屏蔽|的限制|的禁令)+$", "", t)
+    t = t.strip(" 的了，,。！!？?「」『』")
+    if not t or len(t) > 20:
+        return "要解除哪个话题？比如：允许画偷lora的"
+    if imagegen.comic_unban_keyword(t):
+        return f"解除了，「{t}」相关的又能画了"
+    return f"「{t}」不在屏蔽名单里"
+
+
+@_action(
     "capabilities",
     "介绍自己能做什么：用户问「你能做什么」「你会什么」「有什么功能」时使用",
     "（无需参数）",
@@ -727,6 +777,15 @@ def _fast_route(text: str) -> tuple[str, dict] | None:
         return "digest_query", {}
     if re.search(r"四格漫画|(聊天|群聊|刚才).{0,8}漫画", text):
         return "comic", {}
+    # 漫画话题屏蔽/解除：放在漫画生成之前判，措辞更具体
+    if re.search(
+        r"以后.{0,8}(别|不要)(再|要|想)?(画|生成)|(别|不要|别再)画.{0,24}(了|话题|聊天)"
+        r"|漫画.{0,6}(屏蔽|拉黑)",
+        text,
+    ):
+        return "comic_ban", {"text": text}
+    if re.search(r"允许画|解除.{0,8}(漫画|屏蔽|画)|恢复画", text):
+        return "comic_unban", {"text": text}
     # 发空间：漫画分享的说法更具体，先判；纯「发说说/发空间」再判
     if re.search(
         r"(漫画|图片|图).{0,8}(发|分享|传|挂).{0,4}(空间|说说|qzone)"
