@@ -411,6 +411,8 @@ def _find_reference() -> Path | None:
 
 
 async def _generate(prompt: str, *, sticker: bool = True) -> bytes | None:
+    if image_api_dead():
+        return None   # 额度耗尽短路期内直接放弃，不白耗 120 秒超时
     """调 GPT 生图，返回图片 bytes。失败返回 None。
 
     sticker=True（角色/表情包模式）：有参考图走 /images/edits（multipart
@@ -462,6 +464,7 @@ async def _generate(prompt: str, *, sticker: bool = True) -> bytes | None:
                     timeout=120.0,
                 )
         except Exception as exc:  # noqa: BLE001
+            _mark_api_dead_if_quota(exc)
             logger.warning(f"[ai_chat] 生图失败（第 {attempt} 次）: {exc!r}")
             if attempt == 1:
                 await asyncio.sleep(5.0)
@@ -993,6 +996,22 @@ async def _classify_avatar(bot: Bot, qq: str) -> dict:
     }
 
 
+_image_api_dead_until = 0.0   # 生图接口 429 额度耗尽后的短路截止时间
+
+
+def image_api_dead() -> bool:
+    """生图接口刚被 429 额度拒绝过（10 分钟短路期内）。"""
+    return time.time() < _image_api_dead_until
+
+
+def _mark_api_dead_if_quota(exc: Exception) -> None:
+    """额度类错误（429 QUOTA_EXHAUSTED）短路 10 分钟：别每轮都白跑重试。"""
+    global _image_api_dead_until
+    text = str(exc)
+    if "429" in text or "QUOTA" in text.upper():
+        _image_api_dead_until = time.time() + 600
+
+
 async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
     """全流程：选段 → 分镜 → 头像参考 → 出图 → 发送。失败静默返回 False。"""
     if not cfg.ai_imagegen_enabled or not cfg.ai_imagegen_api_key:
@@ -1150,6 +1169,7 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
                 )
                 image = _img_bytes(resp.data[0])
             except Exception as exc:  # noqa: BLE001
+                _mark_api_dead_if_quota(exc)
                 logger.warning(f"[ai_chat] 漫画头像参考 edits 失败，退回纯文本: {exc!r}")
         if image is None:
             try:
@@ -1162,8 +1182,20 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
                 )
                 image = _img_bytes(resp.data[0])
             except Exception as exc:  # noqa: BLE001
+                _mark_api_dead_if_quota(exc)
                 logger.info(f"[ai_chat] 漫画生成失败（静默）: {exc!r}")
-                return False
+        if image is None:
+            # 用户明确要的画没画出来：说一声（区别于自发的模型错误静默）
+            reason = (
+                "生图接口额度用完了"
+                if image_api_dead()
+                else "生图接口出问题了"
+            )
+            try:
+                await bot.send(event, Message(f"{reason}，这轮漫画没画成，稍后再试"))
+            except Exception:  # noqa: BLE001
+                pass
+            return False
 
         try:
             await bot.send(

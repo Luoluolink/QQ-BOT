@@ -149,6 +149,8 @@ async def _exec_comic(bot: Bot, event: GroupMessageEvent, args: dict, is_admin: 
 
     if not cfg.ai_imagegen_enabled or not cfg.ai_imagegen_api_key:
         return None   # 生图没开：退回普通聊天，让模型自己圆场
+    if imagegen.image_api_dead():
+        return "生图接口额度用完了（刚试过还是不行），等额度恢复再来找我"
     if imagegen.quota_left() <= 0:
         return "今天画画配额用完了，明天再来吧"
     # 每群每日限额：只有超级用户（SUPERUSERS，即主人）不计数不受限，
