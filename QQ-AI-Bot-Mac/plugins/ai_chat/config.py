@@ -1326,10 +1326,6 @@ class Config(BaseModel):
     ai_reply_split: bool = True
     # 提醒功能：群里说「提醒我明天8点开会」，到点机器人会喊人
     ai_reminders_enabled: bool = True
-    # 每日晨报：有聊天记录的群在配置时间收到「昨晚聊了什么 + 问候」
-    ai_briefing_enabled: bool = True
-    # 晨报发送时间（24 小时制）
-    ai_briefing_time: str = "08:30"
 
     # ---------- 相册内容索引 ----------
     # 存图时让识图模型生成一句话描述存进 data/album_index.json，

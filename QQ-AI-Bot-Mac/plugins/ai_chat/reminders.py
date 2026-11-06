@@ -160,54 +160,10 @@ async def create_reminder(
     return add(group_id, when, request_text, requester)
 
 
-_briefing_sent: dict[str, str] = {}   # 群号 → 已发晨报的日期
-
-
-async def _morning_briefings() -> None:
-    """每日晨报：有摘要记录的群在配置时间发一条「昨天聊了什么 + 问候」。
-
-    群的来源是 digest 的存储键（有摘要说明群里真聊过天），
-    时间来自 AI_BRIEFING_TIME（默认 08:30），每天只发一次。
-    """
-    if not cfg.ai_briefing_enabled:
-        return
-    from . import digest as digest_mod  # noqa: PLC0415
-
-    today = datetime.now().strftime("%Y-%m-%d")
-    hh, mm = (cfg.ai_briefing_time.split(":") + ["0"])[:2]
-    target = f"{today} {int(hh):02d}:{int(mm):02d}"
-    for key, summary in list(digest_mod._digest.items()):
-        if not summary:
-            continue
-        if _briefing_sent.get(key) == today:
-            continue
-        try:
-            due_dt = datetime.strptime(target, "%Y-%m-%d %H:%M")
-        except ValueError:
-            return
-        if datetime.now() < due_dt:
-            continue
-        _briefing_sent[key] = today
-        try:
-            bot = get_bot()
-        except Exception:  # noqa: BLE001
-            return
-        try:
-            head = summary[:140]
-            await bot.send_msg(
-                message_type="group", group_id=int(key),
-                message=f"早上好。昨晚群里聊到：{head}……具体的等大家醒了再聊。",
-            )
-            logger.info(f"[ai_chat] 晨报已发（群 {key}）")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[ai_chat] 晨报发送失败: {exc!r}")
-
-
 async def _checker_loop() -> None:
     """每 30 秒扫一遍到期提醒并投递。进程生命周期内常驻。"""
     while True:
         try:
-            await _morning_briefings()
             for item in _due_items():
                 try:
                     bot = get_bot()
