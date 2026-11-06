@@ -35,7 +35,7 @@ from nonebot.rule import Rule
 
 from . import ambient, digest, followup, imagegen
 from .config import Config
-from .tools import at_me
+from .tools import at_me, speaker_tag
 
 __plugin_meta__ = PluginMetadata(
     name="主动发言",
@@ -154,8 +154,13 @@ async def handle_proactive(bot: Bot, event: GroupMessageEvent) -> None:
         return
 
     sender = event.sender
-    name = (getattr(sender, "card", "") or getattr(sender, "nickname", "") or "").strip()
-    speaker = name or f"QQ{event.user_id}"
+    # 说话人标记带 QQ 号锚点（同 chat handler 的 _speaker_label）——
+    # 摘要里光靠名字区分不了改名和重名的人，会把话记到别人头上
+    speaker = speaker_tag(
+        (getattr(sender, "card", "") or "").strip(),
+        (getattr(sender, "nickname", "") or "").strip(),
+        event.user_id,
+    )
     text = event.get_plaintext().strip()
 
     # 自己的消息（理论上 NapCat 不上报，双保险）或空文本不记不触发
