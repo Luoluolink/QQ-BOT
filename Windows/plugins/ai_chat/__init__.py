@@ -1528,16 +1528,11 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
         last = idx == len(bubbles) - 1
         segments: list = []
         plain: list = []
-        # 引用要克制：真人不在群里每句话都引用对方。只在两种情况挂：
-        # 对方自己用了引用（在回某条具体消息），或上一条不是这人说的
-        # （隔了几句，不引用会看不出在回谁）。连着对话就不挂。
+        # 引用要更克制：人类一般懒得引用——只有对方自己用了引用
+        # （在回某条具体消息）才挂，平时直接说话
         if idx == 0 and cfg.ai_reply_quote:
-            prev_ts, prev_uid = _last_chat_from.get(group_id, (0.0, 0))
-            consecutive = (
-                prev_uid == event.user_id and time.time() - prev_ts < 600
-            )
             has_reply_seg = any(seg.type == "reply" for seg in event.message)
-            if has_reply_seg or not consecutive:
+            if has_reply_seg:
                 segments.append(MessageSegment.reply(event.message_id))
                 plain.append(MessageSegment.reply(event.message_id))
         _last_chat_from[group_id] = (time.time(), event.user_id)

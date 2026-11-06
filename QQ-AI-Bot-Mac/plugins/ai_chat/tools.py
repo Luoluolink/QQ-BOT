@@ -220,24 +220,31 @@ def speaker_tag(card: str, nickname: str, user_id) -> str:
     return f"{name}({user_id})" if name else f"QQ{user_id}"
 
 
-def split_reply_bubbles(reply: str, max_bubbles: int = 3) -> list[str]:
-    """把一条回复拆成 1~3 条短消息，模拟真人连发的节奏。
+def split_reply_bubbles(reply: str, max_bubbles: int = 4) -> list[str]:
+    """把回复拆成多条短消息，模拟真人连发的节奏。
 
-    真人发消息是「哈哈这个我知道」一条、「我还知道个冷知识」又一条——
-    不是把三句话挤进一个大段落。按句末标点切分，过短的碎片并回前一条；
-    只有一句的不拆。上限 max_bubbles 防止刷屏，
-    超出部分并回最后一条。
+    真人打字是「我去」一条、「这也太强了吧」又一条——逗号处都会换一条，
+    绝不把几句话挤进一个大段落。句末标点和逗号顿号都切；只有一句的不拆；
+    上限 max_bubbles 防刷屏，超出部分并回最后一条。
     """
     text = (reply or "").strip()
     if not text:
         return []
-    parts = [p.strip() for p in re.split(r"(?<=[。！？!?…~～])\s*", text) if p.strip()]
+    if len(text) <= 10:
+        return [text]   # 本来就短，一条正好
+    # 句末标点 + 逗号顿号都作为切分点（标点保留在句尾，气泡更自然）
+    parts = [
+        p.strip()
+        for p in re.split(r"(?<=[。！？!?…~～，,、；;])\s*", text)
+        if p.strip()
+    ]
     if len(parts) <= 1:
         return [text]
+    # 1~2 字的碎片（嗯/哦/6）并回前一条，单独成条太刻意
     merged: list[str] = []
     for part in parts:
-        if merged and (len(part) <= 3 or len(merged[-1]) <= 3):
-            merged[-1] += part        # 碎片（语气词、短应答）并回前一条
+        if merged and len(part) <= 2:
+            merged[-1] += part
         else:
             merged.append(part)
     if len(merged) <= 1:
