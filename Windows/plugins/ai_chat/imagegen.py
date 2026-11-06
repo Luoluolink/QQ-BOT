@@ -758,7 +758,12 @@ def _parse_ambient_line(line: str) -> tuple[str, str] | None:
 
 
 def _pick_candidates(lines: list[str], top: int = 3) -> list[list[tuple[str, str]]]:
-    """滑动窗口海选候选对话段：≥2 人、总长合适、机器人不占主、趣味分高。"""
+    """滑动窗口海选候选对话段：≥2 人、总长合适、机器人不占主、趣味分高。
+
+    同一段聊天（按行指纹）最多入选两次：防止一段太有趣，
+    之后每次生成都是它。行级计数 + 窗口内任一行用满 2 次即整窗排除——
+    窗口边界会漂移，行级才能稳定识别「还是那一段」。
+    """
     parsed = [p for p in (_parse_ambient_line(x) for x in lines) if p and p[1].strip()]
     cands: list[tuple[float, int, list[tuple[str, str]]]] = []
     for size in range(4, 9):
@@ -770,6 +775,9 @@ def _pick_candidates(lines: list[str], top: int = 3) -> list[list[tuple[str, str
                 continue
             # 机器人自言自语凑的段没有对手戏
             if sum(1 for s, _ in win if s == "我") > size // 2:
+                continue
+            # 该段已经画过两次：整窗排除
+            if any(_comic_line_use.get(_line_fp(t), 0) >= 2 for _, t in win):
                 continue
             fun = sum(_line_fun(t) for _, t in win) / (size ** 0.5)
             if len(speakers) >= 3:
@@ -793,6 +801,25 @@ def _pick_candidates(lines: list[str], top: int = 3) -> list[list[tuple[str, str
         if len(picked) >= top:
             break
     return picked
+
+
+def _line_fp(text: str) -> str:
+    """聊天行的指纹：同一段话不管窗口边界怎么滑都认得出是同一行。"""
+    return " ".join(text.split())
+
+
+# 行 → 已被漫画使用的次数（内存即可：ambient 缓冲重启本来就清空）
+_comic_line_use: dict[str, int] = {}
+
+
+def _mark_comic_used(win: list[tuple[str, str]]) -> None:
+    """这段聊天被画过一次：窗口里每行的计数 +1，超长的字典裁一半。"""
+    for _, t in win:
+        key = _line_fp(t)
+        _comic_line_use[key] = _comic_line_use.get(key, 0) + 1
+    if len(_comic_line_use) > 1000:
+        for key in list(_comic_line_use)[:500]:
+            _comic_line_use.pop(key, None)
 
 
 def has_comic_material(group_id: int) -> bool:
@@ -1209,6 +1236,14 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
             gid, "我",
             f"画了一张群聊四格漫画（主题：{str(board.get('topic') or '群聊小剧场')[:50]}）",
         )
+        # 记下这段聊天被用过一次：同一片段最多画两次（用户要求）
+        try:
+            pick = int(board.get("pick") or 0)
+        except (TypeError, ValueError):
+            pick = 0
+        used_win = cands[pick - 1] if 1 <= pick <= len(cands) else (cands[0] if cands else [])
+        if used_win:
+            _mark_comic_used(used_win)
         _last_comic[gid] = image
         logger.info(f"[ai_chat] 群聊四格漫画已发出（{len(image) // 1024}KB）")
         return True
