@@ -95,6 +95,35 @@ class MemberIndex:
 _cache: dict[int, MemberIndex] = {}
 
 
+def resolve_by_name(index: MemberIndex, name: str) -> int | None:
+    """按名字模糊找成员 QQ：精确（名片/昵称）→ 前缀/包含。
+
+    用途：摘要和分镜里的称呼（「小连」）往往没带号码，靠群成员名单
+    把它对回人。多个成员同分命中时宁可不猜——认错人的头像比没有头像糟。
+    """
+    name = (name or "").strip()
+    if not name:
+        return None
+    hits: list[tuple[int, int, int]] = []   # (匹配等级, 名字长度, qq)
+    for member in index.members:
+        best = None
+        for n in member.matchable:
+            if n == name:
+                best = (0, len(n))
+                break
+            if best is None and (n.startswith(name) or name in n):
+                best = (1, len(n))
+        if best:
+            hits.append((best[0], best[1], member.qq))
+    if not hits:
+        return None
+    hits.sort()
+    top = hits[0]
+    if sum(1 for h in hits if h[:2] == top[:2]) > 1:
+        return None   # 歧义（比如两人都叫「小连…」），不猜
+    return top[2]
+
+
 def _pick(data: dict, *keys, default=""):
     """按顺序取第一个存在且非空的键。协议端不同版本字段名可能不一样。"""
     for key in keys:

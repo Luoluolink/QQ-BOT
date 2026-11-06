@@ -860,7 +860,9 @@ def _comic_prompt(
             f"漫画共 {len(avatar_names)} 个主要角色。参考图说明：{binds}。"
             "每一张参考图都必须严格遵循——对应名字的角色出场时长成自己参考图的样子"
             "（发型/发色/标志配件保持一致），两张不能长得像、不能混合特征、"
-            "不能只画其中一张的样子；没有参考图的角色画成普通 Q 版配角"
+            "不能只画其中一张的样子；"
+            "没有参考图的角色必须画出明显不同的外形（不同的发色发型衣服），"
+            "绝不能和有参考图的角色混淆，更不能替有参考图的角色出场说话"
         )
     descs = "；".join(f"{name}：{d}" for name, d in char_desc.items() if d)
     if descs:
@@ -986,6 +988,14 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
             return m.group(1) if m else None
 
         chars: list[tuple[str, str]] = []   # [(名字, qq)]
+        # 名单兜底：摘要/分镜里的称呼（「小连」）没带号码时，去群成员名单模糊找
+        member_index = None
+        try:
+            from . import members as _members  # noqa: PLC0415
+
+            member_index = await _members.get_index(bot, event.group_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.info(f"[ai_chat] 群成员索引不可用（漫画角色匹配降级）: {exc!r}")
         for p in board["panels"]:
             if not isinstance(p, dict):
                 continue
@@ -993,12 +1003,24 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
             if not who or any(who == n for n, _ in chars):
                 continue
             qq = _qq_for(who)
+            if not qq and member_index is not None:
+                qq = _members.resolve_by_name(member_index, who)
+                if qq:
+                    logger.info(f"[ai_chat] 漫画角色「{who}」经成员名单对上 QQ")
             if qq:
                 chars.append((who, qq))
             else:
                 logger.info(f"[ai_chat] 漫画角色「{who}」没对上 QQ 号，将按普通配角画")
             if len(chars) >= 3:
                 break
+        logger.info(
+            "[ai_chat] 漫画分镜: "
+            + " | ".join(
+                f"{p.get('who') or '？'}:{str(p.get('bubble') or '')[:16]}"
+                for p in board["panels"]
+                if isinstance(p, dict)
+            )
+        )
 
         # 头像识别分流：
         # 人物/动物头像 → edits 参考图，角色长成头像那样；
