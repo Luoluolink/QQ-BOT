@@ -663,6 +663,11 @@ async def generate_and_send(
 #    edits 失败退回纯文本生成（头像先让视觉模型写一句外形描述）。
 
 _COMIC_INFLIGHT: set[int] = set()
+_last_comic: dict[int, bytes] = {}   # 群号 → 最近画好的漫画原图（发空间用）
+
+
+def get_last_comic(group_id: int) -> bytes | None:
+    return _last_comic.get(group_id)
 
 _FUN_PAT = re.compile(
     r"笑死|绷不住|离谱|逆天|炸裂|好活|蚌埠|太真实|真实|哈哈哈|6{2,}|？|！"
@@ -1112,6 +1117,7 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
             gid, "我",
             f"画了一张群聊四格漫画（主题：{str(board.get('topic') or '群聊小剧场')[:50]}）",
         )
+        _last_comic[gid] = image
         logger.info(f"[ai_chat] 群聊四格漫画已发出（{len(image) // 1024}KB）")
         return True
     finally:

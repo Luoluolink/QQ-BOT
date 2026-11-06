@@ -87,6 +87,7 @@ from . import (
     vision,
     websearch,
     welcome,
+    qzone,
 )
 from .config import Config
 

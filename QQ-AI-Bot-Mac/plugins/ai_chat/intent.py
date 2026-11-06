@@ -158,6 +158,49 @@ async def _exec_comic(bot: Bot, event: GroupMessageEvent, args: dict, is_admin: 
 
 
 @_action(
+    "qzone_mood",
+    "发QQ空间说说：用户说「发条说说」「发个空间」「更新空间心情」时使用，"
+    "内容由机器人自己构思（此刻心情/想法）",
+    "（无需参数）",
+)
+async def _exec_qzone_mood(bot: Bot, event: GroupMessageEvent, args: dict, is_admin: bool) -> str | None:
+    from . import qzone  # noqa: PLC0415
+
+    if qzone.quota_left() <= 0:
+        return "今天发空间的次数用完了，明天再来吧"
+    text = await qzone.compose_mood(bot, event.group_id)
+    if not text:
+        return "心情还没酝酿好，等会儿再试一次？"
+    ok, note = await qzone.post_mood(bot, text)
+    if ok:
+        return f"发到空间了：\n{text}"
+    return f"空间发失败了（{note}），内容我先留着：\n{text}"
+
+
+@_action(
+    "qzone_share_comic",
+    "把最近生成的群聊漫画分享到QQ空间：用户说「把漫画发空间」「漫画分享到说说」时使用",
+    "（无需参数）",
+)
+async def _exec_qzone_share_comic(bot: Bot, event: GroupMessageEvent, args: dict, is_admin: bool) -> str | None:
+    from . import imagegen, qzone  # noqa: PLC0415
+
+    img = imagegen.get_last_comic(event.group_id)
+    if not img:
+        return "这个群最近还没画过漫画——先说「来个四格漫画」，画完就能发空间"
+    if qzone.quota_left() <= 0:
+        return "今天发空间的次数用完了，明天再来吧"
+    caption = await qzone.compose_mood(
+        bot, event.group_id, hint="刚画好了一张群聊四格漫画，想分享一下"
+    )
+    caption = caption or "刚出炉的群聊四格漫画。"
+    ok, note = await qzone.post_mood(bot, caption, image=img)
+    if ok:
+        return f"漫画发到空间了：\n{caption}"
+    return f"空间发失败了（{note}）"
+
+
+@_action(
     "capabilities",
     "介绍自己能做什么：用户问「你能做什么」「你会什么」「有什么功能」时使用",
     "（无需参数）",
@@ -674,6 +717,15 @@ def _fast_route(text: str) -> tuple[str, dict] | None:
         return "digest_query", {}
     if re.search(r"四格漫画|(聊天|群聊|刚才).{0,8}漫画", text):
         return "comic", {}
+    # 发空间：漫画分享的说法更具体，先判；纯「发说说/发空间」再判
+    if re.search(
+        r"(漫画|图片|图).{0,8}(发|分享|传|挂).{0,4}(空间|说说|qzone)"
+        r"|(空间|说说).{0,6}(发|分享|挂).{0,8}(漫画|图)",
+        text,
+    ):
+        return "qzone_share_comic", {}
+    if re.search(r"(发|更新|写|来).{0,3}(条|个|下|篇)?(说说|空间)|空间心情|qzone", text):
+        return "qzone_mood", {}
     return None
 
 
