@@ -1022,6 +1022,16 @@ def _fetch_avatar(qq: str) -> bytes | None:
     return None
 
 
+# 漫画统一画风（用户指定的偏好：粉紫粉彩软萌风）
+_COMIC_STYLE = (
+    "四格漫画，2x2 分格。画风：粉紫色系粉彩色调（浅粉、淡紫、奶白），"
+    "线条柔软有粗细变化的描边，圆润软萌的 Q 版角色，"
+    "大眼睛带星光高光、脸颊腮红，梦幻柔光阴影，整体甜美柔和；"
+    "背景淡色渐变加小装饰（音符、星星、光环）；"
+    "对话气泡圆角白底、描边与文字同色系（粉紫红色）"
+)
+
+
 def _comic_prompt(
     board: dict, char_desc: dict[str, str], avatar_names: list[str] | None = None
 ) -> str:
@@ -1030,7 +1040,7 @@ def _comic_prompt(
     avatar_names 是按上传顺序排列的头像角色名——必须显式告诉模型
     「第几张图是谁」，否则它自己猜谁是谁，画出来人和台词对不上。
     """
-    parts = ["四格漫画（2x2 分格，粗描边，可爱 Q 版风格，明亮配色）"]
+    parts = [_COMIC_STYLE]
     if avatar_names:
         binds = "；".join(
             f"第{i}张参考图是「{name}」的头像" for i, name in enumerate(avatar_names, 1)
