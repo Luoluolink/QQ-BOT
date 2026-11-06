@@ -669,6 +669,66 @@ _last_comic: dict[int, bytes] = {}   # 群号 → 最近画好的漫画原图（
 def get_last_comic(group_id: int) -> bytes | None:
     return _last_comic.get(group_id)
 
+
+# ---- 漫画每群每日限额：普通群友每群 3 次/天，管理员指令不受限 ----
+# 持久化到 data/comic_usage.json：重启太频繁，内存计数一重启就清零形同虚设
+_COMIC_USAGE_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "data" / "comic_usage.json"
+)
+_comic_usage: dict[str, int] = {}
+_comic_day: str = ""
+
+
+def _load_comic_usage() -> None:
+    global _comic_usage, _comic_day
+    today = date.today().isoformat()
+    if _comic_day == today and _comic_usage:
+        return
+    if _comic_day == today:
+        return
+    try:
+        raw = json.loads(_COMIC_USAGE_PATH.read_text(encoding="utf-8"))
+        if isinstance(raw, dict) and raw.get("day") == today:
+            _comic_usage = {
+                k: v for k, v in raw.get("groups", {}).items() if isinstance(v, int)
+            }
+        else:
+            _comic_usage = {}
+        _comic_day = today
+    except (OSError, ValueError):
+        _comic_usage = {}
+        _comic_day = today
+
+
+def _save_comic_usage() -> None:
+    try:
+        _COMIC_USAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _COMIC_USAGE_PATH.write_text(
+            json.dumps(
+                {"day": _comic_day, "groups": _comic_usage}, ensure_ascii=False
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def comic_quota_left(group_id: int) -> int:
+    _load_comic_usage()
+    return max(0, cfg.ai_comic_daily_limit - _comic_usage.get(str(group_id), 0))
+
+
+def take_comic_quota(group_id: int) -> bool:
+    """占用一次该群今天的漫画额度。管理员路径不应调用此函数。"""
+    _load_comic_usage()
+    key = str(group_id)
+    if _comic_usage.get(key, 0) >= cfg.ai_comic_daily_limit:
+        return False
+    _comic_usage[key] = _comic_usage.get(key, 0) + 1
+    _save_comic_usage()
+    return True
+
 _FUN_PAT = re.compile(
     r"笑死|绷不住|离谱|逆天|炸裂|好活|蚌埠|太真实|真实|哈哈哈|6{2,}|？|！"
 )
