@@ -1131,11 +1131,28 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
     cands = _pick_candidates(ambient.recent_lines(gid, limit=40))
     digest_ctx = ""
     if not cands:
-        # ambient 是内存缓冲，重启就清空——太薄时退用滚动摘要当素材
+        # ambient 是内存缓冲，重启就清空——太薄时退用滚动摘要当素材。
+        # 但摘要同样可能写满被屏蔽的话题（偷Lora 段就是这么漏网的）：
+        # 把含屏蔽词的句子剔掉，剩下的够一段才用，否则明说拒绝
         from . import digest as digest_mod  # noqa: PLC0415
 
         digest_ctx = digest_mod.current(gid)
-        if not digest_ctx:
+        if digest_ctx and _banned_keywords:
+            kept = [
+                s.strip()
+                for s in re.split(r"[。；;！!？?\n]", digest_ctx)
+                if s.strip() and not any(k in s.lower() for k in _banned_keywords)
+            ]
+            digest_ctx = "。".join(kept)
+        if not cands and (not digest_ctx or len(digest_ctx) < 30):
+            # 没别的可画：用户主动要的，明说而不是装死
+            try:
+                await bot.send(
+                    event,
+                    Message("最近的聊天不是被屏蔽了就是还没攒出段子，先聊会儿天再来找我"),
+                )
+            except Exception:  # noqa: BLE001
+                pass
             return False
     _COMIC_INFLIGHT.add(gid)
     try:
@@ -1143,6 +1160,17 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
             _comic_storyboard(cands) if cands else _comic_storyboard_from_digest(digest_ctx)
         )
         if not board:
+            return False
+        # 成品终检：分镜/台词里撞上屏蔽词照样毙掉（模型偶尔自由发挥）
+        import json as _json
+
+        board_text = _json.dumps(board, ensure_ascii=False).lower()
+        if any(kw in board_text for kw in _banned_keywords):
+            logger.warning("[ai_chat] 分镜成品撞上屏蔽话题，毙掉重选")
+            try:
+                await bot.send(event, Message("刚编的分镜撞上屏蔽话题了，换段聊天我再试试"))
+            except Exception:  # noqa: BLE001
+                pass
             return False
         if not _take_quota():
             logger.info("[ai_chat] 漫画生成：日限已用完，放弃")
