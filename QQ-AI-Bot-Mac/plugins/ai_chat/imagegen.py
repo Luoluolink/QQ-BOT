@@ -833,9 +833,10 @@ def _comic_prompt(
             f"第{i}张参考图是「{name}」的头像" for i, name in enumerate(avatar_names, 1)
         )
         parts.append(
-            f"参考图说明：{binds}。对应名字的角色出场时必须严格长成"
-            "自己参考图的样子（发型/发色/标志配件保持一致），"
-            "没有参考图的角色画成普通 Q 版配角"
+            f"漫画共 {len(avatar_names)} 个主要角色。参考图说明：{binds}。"
+            "每一张参考图都必须严格遵循——对应名字的角色出场时长成自己参考图的样子"
+            "（发型/发色/标志配件保持一致），两张不能长得像、不能混合特征、"
+            "不能只画其中一张的样子；没有参考图的角色画成普通 Q 版配角"
         )
     descs = "；".join(f"{name}：{d}" for name, d in char_desc.items() if d)
     if descs:
@@ -880,13 +881,17 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
             return False
 
         # 说话人 → QQ 号：分镜里 who 用的是名字，回原候选里对回号码。
-        # 先精确匹配，再子串兜底（名片「阿萝酱」vs 分镜 who「阿萝」）
+        # 三层匹配：精确 → 子串（名片「阿萝酱」vs who「阿萝」）→
+        # who 自带号码（无名片群友的标记就是「QQ12345」）
         name2qq: dict[str, str] = {}
         for win in cands:
             for speaker, _ in win:
                 m = re.search(r"^(.*?)\((\d{4,12})\)", speaker)
                 if m:
                     name2qq.setdefault(m.group(1).strip(), m.group(2))
+                    name2qq.setdefault(speaker, m.group(2))   # 完整标记也能对上
+                elif (m2 := re.fullmatch(r"QQ(\d{4,12})", speaker.strip())):
+                    name2qq.setdefault(speaker.strip(), m2.group(1))
 
         def _qq_for(who: str) -> str | None:
             who = who.strip()
@@ -897,7 +902,10 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
                 if name and (name in who or who in name):
                     if best is None or len(name) > len(best[0]):
                         best = (name, qq)
-            return best[1] if best else None
+            if best:
+                return best[1]
+            m = re.search(r"(\d{4,12})", who)   # who 里直接带号码
+            return m.group(1) if m else None
 
         chars: list[tuple[str, str]] = []   # [(名字, qq)]
         for p in board["panels"]:
@@ -909,7 +917,9 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
             qq = _qq_for(who)
             if qq:
                 chars.append((who, qq))
-            if len(chars) >= 2:
+            else:
+                logger.info(f"[ai_chat] 漫画角色「{who}」没对上 QQ 号，将按普通配角画")
+            if len(chars) >= 3:
                 break
 
         # 参考图：edits 多头像；失败退回「外形描述 + 纯文本生成」
@@ -918,6 +928,12 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
             raw = await asyncio.to_thread(_fetch_avatar, qq)
             if raw:
                 avatars.append((f"{name}.png", raw))
+            else:
+                logger.info(f"[ai_chat] 漫画角色「{name}」的头像拉取失败")
+        logger.info(
+            f"[ai_chat] 漫画角色：{[n for n, _ in chars]}，"
+            f"头像参考 {len(avatars)} 张"
+        )
         char_desc: dict[str, str] = {}
         image: bytes | None = None
         from .ai_client import make_client  # noqa: PLC0415
