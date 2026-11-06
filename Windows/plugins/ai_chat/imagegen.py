@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import io
 import re
 import shutil
@@ -789,8 +790,9 @@ def _pick_candidates(lines: list[str], top: int = 3) -> list[list[tuple[str, str
             # 机器人自言自语凑的段没有对手戏
             if sum(1 for s, _ in win if s == "我") > size // 2:
                 continue
-            # 该段已经画过两次：整窗排除（计数持久化，重启不清）
-            if any(_comic_line_use.get(_line_fp(t), 0) >= 2 for _, t in win):
+            # 该段已经画过一次：整窗排除（计数持久化，重启不清）。
+            # 想重画同一段就用「重新画一遍」命令，会主动清掉计数
+            if any(_comic_line_use.get(_line_fp(t), 0) >= 1 for _, t in win):
                 continue
             # 话题黑名单：命中永久屏蔽词的窗口不选
             combined = " ".join(t for _, t in win).lower()
@@ -828,10 +830,28 @@ _BLACKLIST_PATH = (
 )
 _banned_keywords: set[str] = set()
 _comic_line_use: dict[str, int] = {}
+_digest_used: dict[str, int] = {}   # 摘要指纹 → 已画次数（同一份摘要只画一版）
+_last_used_win: dict[int, list] = {}   # 群号 → 最近一次画的窗口（重新画命令用）
+
+
+def pop_last_used_win(group_id: int) -> list:
+    """取走最近一次画的窗口（重新画命令用）：清计数让这段可以再画。"""
+    win = _last_used_win.get(group_id) or []
+    _last_used_win.pop(group_id, None)
+    return win
+
+
+def unmark_comic_used(win: list) -> None:
+    """把窗口各行的使用计数退回去（重新画命令的额度返还）。"""
+    for _, t in win:
+        key = _line_fp(t)
+        if key in _comic_line_use:
+            _comic_line_use[key] = max(0, _comic_line_use[key] - 1)
+    _save_blacklist()
 
 
 def _load_blacklist() -> None:
-    global _banned_keywords, _comic_line_use
+    global _banned_keywords, _comic_line_use, _digest_used
     try:
         raw = json.loads(_BLACKLIST_PATH.read_text(encoding="utf-8"))
         _banned_keywords = {
@@ -840,6 +860,10 @@ def _load_blacklist() -> None:
         lu = raw.get("line_use", {})
         _comic_line_use = {
             k: v for k, v in lu.items() if isinstance(k, str) and isinstance(v, int)
+        }
+        df = raw.get("digest_fps", {})
+        _digest_used = {
+            k: v for k, v in df.items() if isinstance(k, str) and isinstance(v, int)
         }
     except (OSError, ValueError):
         pass   # 文件不存在/损坏都从空开始
@@ -850,7 +874,11 @@ def _save_blacklist() -> None:
         _BLACKLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
         _BLACKLIST_PATH.write_text(
             json.dumps(
-                {"keywords": sorted(_banned_keywords), "line_use": _comic_line_use},
+                {
+                    "keywords": sorted(_banned_keywords),
+                    "line_use": _comic_line_use,
+                    "digest_fps": _digest_used,
+                },
                 ensure_ascii=False, indent=2,
             ) + "\n",
             encoding="utf-8",
@@ -948,7 +976,9 @@ async def _llm_panels_json(prompt: str) -> dict | None:
     return None
 
 
-async def _comic_storyboard(cands: list[list[tuple[str, str]]]) -> dict | None:
+async def _comic_storyboard(
+    cands: list[list[tuple[str, str]]], fix_reason: str = ""
+) -> dict | None:
     """模型当编辑：挑候选 + 写四格分镜。失败返回 None。"""
     blocks = []
     for idx, win in enumerate(cands, 1):
@@ -962,15 +992,20 @@ async def _comic_storyboard(cands: list[list[tuple[str, str]]]) -> dict | None:
         "漫画会把头像画成这个人，换人=张冠李戴。\n"
         '只输出 JSON（不要任何其他文字）：\n'
         '{"pick": 候选编号, "topic": "一句话主题", '
-        '"panels": [{"who": "说话人名字(可空)", "scene": "画面动作描述，不要出现文字", '
+        '"panels": [{"who": "说话人名字(可空)", "src": "本格改编自的那句原话，照抄", '
+        '"scene": "画面动作描述，不要出现文字", '
         '"bubble": "气泡台词，可为空串"}]}，panels 固定 4 个元素。\n'
         "who 只能填片段里出现过的说话人名字（不含括号里的号码）。\n\n"
         + "\n\n".join(blocks)
     )
+    if fix_reason:
+        prompt += f"\n\n上一版分镜被审核驳回：{fix_reason}。重新生成分镜，务必修正该问题。"
     return await _llm_panels_json(prompt)
 
 
-async def _comic_storyboard_from_digest(digest_ctx: str) -> dict | None:
+async def _comic_storyboard_from_digest(
+    digest_ctx: str, fix_reason: str = ""
+) -> dict | None:
     """ambient 太薄（如刚重启，内存缓冲被清）时退而求其次：拿滚动摘要编小剧场。
 
     摘要没有带号码的原文，所以这条路画不出头像——角色按普通 Q 版处理。
@@ -981,12 +1016,87 @@ async def _comic_storyboard_from_digest(digest_ctx: str) -> dict | None:
         "可以轻度演绎但不得涉及敏感内容；每格气泡台词不超过 18 字。\n"
         '只输出 JSON（不要任何其他文字）：\n'
         '{"topic": "一句话主题", '
-        '"panels": [{"who": "角色名(可空)", "scene": "画面动作描述，不要出现文字", '
+        '"panels": [{"who": "角色名(可空)", "src": "本格对应摘要里的哪句内容", '
+        '"scene": "画面动作描述，不要出现文字", '
         '"bubble": "气泡台词，可为空串"}]}，panels 固定 4 个元素。\n'
         'who 用摘要里出现过的名字，没有就用「甲」「乙」这样的通称。\n\n'
         f"摘要：{digest_ctx[:300]}"
     )
+    if fix_reason:
+        prompt += f"\n\n上一版分镜被审核驳回：{fix_reason}。重新生成分镜，务必修正该问题。"
     return await _llm_panels_json(prompt)
+
+
+async def _review_board(board: dict, material_text: str) -> tuple[bool, str]:
+    """分镜审核员：对位（谁说的就是谁）/忠实（不编造不乱说）/连贯 三查。
+
+    返回 (是否通过, 驳回原因)。审核器自己出错视为通过——它坏了不能卡死出图。
+    """
+    from .ai_client import chat_kwargs, make_client  # noqa: PLC0415
+
+    lines = []
+    for i, p in enumerate(board.get("panels", [])[:4], 1):
+        if isinstance(p, dict):
+            lines.append(
+                f"第{i}格 说话人:{p.get('who', '') or '空'} "
+                f"台词:{p.get('bubble', '') or '无'} 原句:{p.get('src', '') or '无'}"
+            )
+    prompt = (
+        "你是漫画分镜审核员。素材是一段群聊，分镜改编自它。逐格检查：\n"
+        "1. 对位：每格的说话人是否就是它 src 原句的说话人——谁说的就是谁，"
+        "互换角色=不通过\n"
+        "2. 忠实：台词是否贴合 src/素材的意思与语气，编造素材里没有的内容、"
+        "乱说话=不通过\n"
+        "3. 连贯：四格连起来是否通顺、有起承转合\n"
+        "轻度润色和语气夸张不算问题；拿不准就判 ok。\n"
+        '只输出 JSON：{"ok": true} 或 {"ok": false, "reason": "哪一格什么问题，一句话"}'
+    )
+    content = f"【素材】\n{material_text[:800]}\n\n【分镜】\n" + "\n".join(lines)
+    try:
+        client = make_client(cfg.ai_api_key, cfg.ai_api_base, cfg.ai_proxy)
+        resp = await client.chat.completions.create(
+            **chat_kwargs(
+                [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": content},
+                ],
+                cfg,
+                max_tokens=500,
+                temperature=0.0,
+            ),
+            timeout=30,
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        start, end = text.find("{"), text.rfind("}")
+        if start < 0 or end <= start:
+            return True, ""
+        data = json.loads(text[start:end + 1])
+        if data.get("ok") is False:
+            return False, str(data.get("reason") or "分镜有问题")[:120]
+        return True, ""
+    except Exception as exc:  # noqa: BLE001
+        logger.info(f"[ai_chat] 分镜审核器异常（放行）: {exc!r}")
+        return True, ""
+
+
+def _bind_speakers(board: dict, win: list[tuple[str, str]]) -> None:
+    """把每格的 who 机械绑定到 src 原句的说话人（模型想说错人也说不了）。"""
+    norm = {" ".join(t.split()): s for s, t in win}
+    for p in board.get("panels", []):
+        if not isinstance(p, dict):
+            continue
+        src = " ".join(str(p.get("src") or "").split())
+        if not src:
+            continue
+        speaker = None
+        for line_text, s in norm.items():
+            if line_text == src or line_text in src or src in line_text:
+                speaker = s
+                break
+        if speaker:
+            name = re.split(r"\((\d+)\)", speaker)[0].strip()
+            if name:
+                p["who"] = name
 
 
 def _img_bytes(obj) -> bytes | None:
@@ -1022,13 +1132,14 @@ def _fetch_avatar(qq: str) -> bytes | None:
     return None
 
 
-# 漫画统一画风（用户指定的偏好：粉紫粉彩软萌风）
+# 漫画统一画风（用户指定的偏好：软萌粉彩风，配色随内容走）
 _COMIC_STYLE = (
-    "四格漫画，2x2 分格。画风：粉紫色系粉彩色调（浅粉、淡紫、奶白），"
-    "线条柔软有粗细变化的描边，圆润软萌的 Q 版角色，"
-    "大眼睛带星光高光、脸颊腮红，梦幻柔光阴影，整体甜美柔和；"
+    "四格漫画，2x2 分格。画风：线条柔软有粗细变化的描边，"
+    "圆润软萌的 Q 版角色，大眼睛带星光高光、脸颊腮红，梦幻柔光阴影，"
     "背景淡色渐变加小装饰（音符、星星、光环）；"
-    "对话气泡圆角白底、描边与文字同色系（粉紫红色）"
+    "对话气泡圆角白底、描边与文字同色系；"
+    "配色不固定：根据这一格的场景、时间和情绪选择协调的主色调"
+    "（如白天户外用明亮的暖色、深夜用安静的深色、海边用蓝色系）"
 )
 
 
@@ -1140,6 +1251,7 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
 
     cands = _pick_candidates(ambient.recent_lines(gid, limit=40))
     digest_ctx = ""
+    digest_fp_used = None
     if not cands:
         # ambient 是内存缓冲，重启就清空——太薄时退用滚动摘要当素材。
         # 但摘要同样可能写满被屏蔽的话题（偷Lora 段就是这么漏网的）：
@@ -1154,6 +1266,19 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
                 if s.strip() and not any(k in s.lower() for k in _banned_keywords)
             ]
             digest_ctx = "。".join(kept)
+        # 同一份摘要只画一版：摘要内容几乎不变时会反复产出同一段漫画
+        if digest_ctx:
+            digest_fp = hashlib.sha1(digest_ctx.encode("utf-8")).hexdigest()[:16]
+            if _digest_used.get(digest_fp, 0) >= 1:
+                try:
+                    await bot.send(
+                        event,
+                        Message("这段摘要的漫画画过一版了，等新聊天进来再画新的"),
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                return False
+            digest_fp_used = digest_fp
         if not cands and (not digest_ctx or len(digest_ctx) < 30):
             # 没别的可画：用户主动要的，明说而不是装死
             try:
@@ -1171,6 +1296,48 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
         )
         if not board:
             return False
+        # 机械对位：每格 who 绑定到 src 原句的说话人（模型换不了人）
+        if cands:
+            pick = board.get("pick")
+            try:
+                pick_i = int(pick) - 1 if pick else 0
+            except (TypeError, ValueError):
+                pick_i = 0
+            pick_i = pick_i % len(cands) if cands else 0
+            _bind_speakers(board, cands[pick_i])
+        # 审核员三查（对位/忠实/连贯）：不过带意见重写一次，再不过就明说不画
+        material_text = (
+            "\n".join(f"【{s}】{t}" for win in cands for s, t in win)
+            if cands
+            else f"摘要：{digest_ctx}"
+        )
+        ok, reason = await _review_board(board, material_text)
+        if not ok:
+            logger.warning(f"[ai_chat] 分镜审核不通过，重写: {reason}")
+            board = await (
+                _comic_storyboard(cands, fix_reason=reason)
+                if cands
+                else _comic_storyboard_from_digest(digest_ctx, fix_reason=reason)
+            )
+            if not board:
+                return False
+            if cands:
+                pick = board.get("pick")
+                try:
+                    pick_i = int(pick) - 1 if pick else 0
+                except (TypeError, ValueError):
+                    pick_i = 0
+                _bind_speakers(board, cands[pick_i % len(cands)])
+            ok, reason = await _review_board(board, material_text)
+            if not ok:
+                try:
+                    await bot.send(
+                        event,
+                        Message(f"编了两版分镜都没过审核（{reason}），这轮不画了，换段聊天再试试"),
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                return False
         # 成品终检：分镜/台词里撞上屏蔽词照样毙掉（模型偶尔自由发挥）
         import json as _json
 
@@ -1362,7 +1529,11 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
         used_win = cands[pick - 1] if 1 <= pick <= len(cands) else (cands[0] if cands else [])
         if used_win:
             _mark_comic_used(used_win)
+        _last_used_win[gid] = used_win
         _last_comic[gid] = image
+        if not cands and digest_fp_used:
+            _digest_used[digest_fp_used] = _digest_used.get(digest_fp_used, 0) + 1
+            _save_blacklist()
         # 自动分享：模型判断值不值得发空间，值得就后台发（配额内）
         if cfg.ai_qzone_auto_share_comic:
             async def _auto_share() -> None:

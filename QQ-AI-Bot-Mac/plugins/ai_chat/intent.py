@@ -168,6 +168,36 @@ async def _exec_comic(bot: Bot, event: GroupMessageEvent, args: dict, is_admin: 
 
 
 @_action(
+    "comic_redo",
+    "重新画上一段漫画：用户说「重新画一遍」「再画一遍刚才的」时使用，"
+    "会返还上一段的额度并换个分镜重画",
+    "（无需参数）",
+)
+async def _exec_comic_redo(bot: Bot, event: GroupMessageEvent, args: dict, is_admin: bool) -> str | None:
+    import asyncio  # noqa: PLC0415
+    from . import imagegen  # noqa: PLC0415
+
+    if not cfg.ai_imagegen_enabled or not cfg.ai_imagegen_api_key:
+        return None
+    if imagegen.image_api_dead():
+        return "生图接口额度用完了（刚试过还是不行），等额度恢复再来找我"
+    if imagegen.quota_left() <= 0:
+        return "今天画画配额用完了，明天再来吧"
+    is_super = str(event.user_id) in {str(s) for s in bot.config.superusers}
+    if not is_super and not imagegen.take_comic_quota(event.group_id):
+        return (
+            f"这个群今天的漫画次数用完了（每天 {cfg.ai_comic_daily_limit} 次），"
+            "明天再来吧——只有我的主人不受这个限制"
+        )
+    # 返还上一段的使用计数，让同一段可以重画；同时清掉上一张的记录
+    win = imagegen.pop_last_used_win(event.group_id)
+    if win:
+        imagegen.unmark_comic_used(win)
+    asyncio.create_task(imagegen.generate_comic_from_chat(bot, event))
+    return "好，重画——这次换个分镜再给你来一版"
+
+
+@_action(
     "qzone_mood",
     "发QQ空间说说：用户说「发条说说」「发个空间」「更新空间心情」时使用，"
     "内容由机器人自己构思（此刻心情/想法）",
@@ -769,6 +799,8 @@ def _fast_route(text: str) -> tuple[str, dict] | None:
         return "digest_query", {}
     if re.search(r"四格漫画|(聊天|群聊|刚才).{0,8}漫画", text):
         return "comic", {}
+    if re.search(r"(重新|再|重)画(一?遍|一?次|刚才)|重画", text):
+        return "comic_redo", {}
     # 漫画话题屏蔽/解除：放在漫画生成之前判，措辞更具体
     if re.search(
         r"以后.{0,8}(别|不要)(再|要|想)?(画|生成)|(别|不要|别再)画.{0,24}(了|话题|聊天)"
