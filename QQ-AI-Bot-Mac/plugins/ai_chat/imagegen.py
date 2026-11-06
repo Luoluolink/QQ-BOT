@@ -883,6 +883,45 @@ def _comic_prompt(
     return "\n".join(parts)
 
 
+_AVATAR_CLASSIFY_PROMPT = (
+    "这是一个 QQ 头像。判断它的类型，并给出画 Q 版漫画角色要用的描述。\n"
+    "类型四选一：character=动漫/真人人物；animal=动物；"
+    "logo=标志/徽章/文字/图标；scene=风景/植物/物品等其他。\n"
+    "严格按下面三行格式输出（不要 JSON、不要任何其他文字）：\n"
+    "类型：character/animal/logo/scene 之一\n"
+    "描述：<一句话。character/animal 描述外形特征（发型发色/眼睛/服饰/物种）；"
+    "logo 描述标志的形状图案和文字；scene 简述画面>\n"
+    "配色：<2-3个颜色词>"
+)
+
+
+async def _classify_avatar(bot: Bot, qq: str) -> dict:
+    """识别头像类型，决定角色锚定方式（参考图 / 印标志 / 取配色）。失败返回 {}。"""
+    from . import vision as _vision  # noqa: PLC0415
+
+    url = f"https://q1.qlogo.cn/g?b=qq&nk={qq}&s=640"
+    try:
+        desc = await _vision.describe_images(
+            bot, [{"url": url}], mode="url", prompt=_AVATAR_CLASSIFY_PROMPT
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.info(f"[ai_chat] 头像识别失败 qq={qq}: {exc!r}")
+        return {}
+    if not desc:
+        return {}
+    tm = re.search(r"类型\s*[：:]\s*(character|animal|logo|scene)", desc)
+    dm = re.search(r"描述\s*[：:]\s*(.+)", desc)
+    cm = re.search(r"配色\s*[：:]\s*(.+)", desc)
+    if not tm:
+        # 没按格式回：整段当普通描述，按配色角色处理
+        return {"type": "scene", "desc": desc.strip()[:60], "colors": ""}
+    return {
+        "type": tm.group(1),
+        "desc": dm.group(1).strip()[:80] if dm else "",
+        "colors": cm.group(1).strip()[:30] if cm else "",
+    }
+
+
 async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
     """全流程：选段 → 分镜 → 头像参考 → 出图 → 发送。失败静默返回 False。"""
     if not cfg.ai_imagegen_enabled or not cfg.ai_imagegen_api_key:
@@ -913,17 +952,24 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
             return False
 
         # 说话人 → QQ 号：分镜里 who 用的是名字，回原候选里对回号码。
-        # 三层匹配：精确 → 子串（名片「阿萝酱」vs who「阿萝」）→
-        # who 自带号码（无名片群友的标记就是「QQ12345」）
+        # 三层匹配：精确 → 子串（名片「阿萝酱」vs 分镜 who「阿萝」）→
+        # who 自带号码（无名片群友的标记就是「QQ12345」）。
+        # 摘要兜底路径没有候选窗口，但摘要里保留了「名字(QQ号)」标记，同样能对
         name2qq: dict[str, str] = {}
-        for win in cands:
-            for speaker, _ in win:
-                m = re.search(r"^(.*?)\((\d{4,12})\)", speaker)
-                if m:
-                    name2qq.setdefault(m.group(1).strip(), m.group(2))
-                    name2qq.setdefault(speaker, m.group(2))   # 完整标记也能对上
-                elif (m2 := re.fullmatch(r"QQ(\d{4,12})", speaker.strip())):
-                    name2qq.setdefault(speaker.strip(), m2.group(1))
+        if cands:
+            for win in cands:
+                for speaker, _ in win:
+                    m = re.search(r"^(.*?)\((\d{4,12})\)", speaker)
+                    if m:
+                        name2qq.setdefault(m.group(1).strip(), m.group(2))
+                        name2qq.setdefault(speaker, m.group(2))   # 完整标记也能对上
+                    elif (m2 := re.fullmatch(r"QQ(\d{4,12})", speaker.strip())):
+                        name2qq.setdefault(speaker.strip(), m2.group(1))
+        else:
+            for m in re.finditer(
+                r"([\w一-龥]{1,16})(?:（[^（）]*）)?\((\d{4,12})\)", digest_ctx or ""
+            ):
+                name2qq.setdefault(m.group(1), m.group(2))
 
         def _qq_for(who: str) -> str | None:
             who = who.strip()
@@ -954,9 +1000,36 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
             if len(chars) >= 3:
                 break
 
-        # 参考图：edits 多头像；失败退回「外形描述 + 纯文本生成」
+        # 头像识别分流：
+        # 人物/动物头像 → edits 参考图，角色长成头像那样；
+        # 标志/徽章 → 简单衣服印标志、整体取标志配色；
+        # 风景/植物等其他 → 只取配色生成角色
+        infos = await asyncio.gather(*(_classify_avatar(bot, qq) for _, qq in chars))
+        avatar_infos = {name: info for (name, _), info in zip(chars, infos) if info}
+        char_desc: dict[str, str] = {}
+        for name, _ in chars:
+            info = avatar_infos.get(name)
+            if not info:
+                logger.info(f"[ai_chat] 漫画角色「{name}」头像识别失败，按普通配角画")
+                continue
+            colors = str(info.get("colors") or "").strip()
+            if info.get("type") in ("character", "animal"):
+                char_desc[name] = f"Q版化的{info.get('desc', '')}"
+            elif info.get("type") == "logo":
+                base = (
+                    f"穿简单T恤/连帽衫、胸口印着「{info.get('desc', '')}」"
+                    "标志的Q版人物"
+                )
+                char_desc[name] = base + (f"，整体配色：{colors}" if colors else "")
+            else:
+                char_desc[name] = (
+                    f"Q版人物，配色取自头像（{colors or info.get('desc', '')}）"
+                )
+        # 只有人物/动物头像才能当脸，标志和风景图塞给模型只会画歪
         avatars: list[tuple[str, bytes]] = []
         for name, qq in chars:
+            if avatar_infos.get(name, {}).get("type") not in ("character", "animal"):
+                continue
             raw = await asyncio.to_thread(_fetch_avatar, qq)
             if raw:
                 avatars.append((f"{name}.png", raw))
@@ -964,16 +1037,16 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
                 logger.info(f"[ai_chat] 漫画角色「{name}」的头像拉取失败")
         logger.info(
             f"[ai_chat] 漫画角色：{[n for n, _ in chars]}，"
+            f"类型 {[avatar_infos.get(n, {}).get('type') for n, _ in chars]}，"
             f"头像参考 {len(avatars)} 张"
         )
-        char_desc: dict[str, str] = {}
         image: bytes | None = None
         from .ai_client import make_client  # noqa: PLC0415
 
         client = make_client(cfg.ai_imagegen_api_key, cfg.ai_imagegen_api_base, cfg.ai_proxy)
         if avatars:
             prompt_edits = _comic_prompt(
-                board, {}, avatar_names=[n for n, _ in avatars]
+                board, char_desc, avatar_names=[n for n, _ in avatars]
             )
             try:
                 resp = await client.images.edit(
@@ -987,14 +1060,6 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
                 image = _img_bytes(resp.data[0])
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"[ai_chat] 漫画头像参考 edits 失败，退回纯文本: {exc!r}")
-        if image is None and avatars:
-            from . import vision as _vision  # noqa: PLC0415
-
-            for name, qq in chars:
-                url = f"https://q1.qlogo.cn/g?b=qq&nk={qq}&s=640"
-                desc = await _vision.describe_images(bot, [{"url": url}], mode="url")
-                if desc:
-                    char_desc[name] = desc[:60]
         if image is None:
             try:
                 resp = await client.images.generate(

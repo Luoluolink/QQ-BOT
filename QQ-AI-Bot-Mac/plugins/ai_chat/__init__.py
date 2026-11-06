@@ -187,6 +187,58 @@ _reply_openers: DefaultDict[int, Deque[str]] = defaultdict(
 _pending_sends: DefaultDict[str, list[dict]] = defaultdict(list)
 
 
+async def _guard_check(reply: str, user_text: str, materials: list[str]) -> tuple[bool, str]:
+    """回复事实核查：对照本轮注入的记忆/摘要，查三类乱说话。
+
+    1. 张冠李戴——把 A 的话/事安到 B 头上（以「名字(QQ号)」标记为准）
+    2. 编造——素材里没有的事，当成确定的记忆/事实说出来
+    3. 贪功——把群友聊过、做过的事说成机器人自己做的
+
+    返回 (是否通过, 原因)。核查器自身出错一律放行——它坏了不能挡住正常聊天。
+    """
+    from .ai_client import chat_kwargs, make_client  # noqa: PLC0415
+
+    prompt = (
+        "你是事实核查员。机器人根据【素材】写出了【回复】，检查回复有没有乱说话：\n"
+        "1. 张冠李戴：把 A 说的话/做的事安到 B 头上（说话人标记是「名字(QQ号)」，"
+        "以号码为准而不是名字）\n"
+        "2. 编造：素材里没有的事，回复里当成确定的记忆或事实说出来\n"
+        "3. 贪功：把群友聊过、做过的事说成机器人自己做的\n"
+        "注意：语气夸张、玩笑修辞不算错；常识性客套不算错；"
+        "回复对素材的合理引申不算错。拿不准就判 ok。\n"
+        '只输出 JSON：{"ok": true} 或 {"ok": false, "reason": "一句话说明哪里错了"}'
+    )
+    content = (
+        "【素材】\n" + "\n".join(f"- {m[:500]}" for m in materials[:3])
+        + f"\n\n【用户消息】{user_text[:200]}\n\n【回复】{reply[:500]}"
+    )
+    try:
+        client = make_client(cfg.ai_api_key, cfg.ai_api_base, cfg.ai_proxy)
+        resp = await client.chat.completions.create(
+            **chat_kwargs(
+                [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": content},
+                ],
+                cfg,
+                max_tokens=600,
+                temperature=0.0,
+            ),
+            timeout=20,
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        start, end = text.find("{"), text.rfind("}")
+        if start < 0 or end <= start:
+            return True, ""
+        data = json.loads(text[start:end + 1])
+        if data.get("ok") is False:
+            return False, str(data.get("reason") or "事实有误")[:120]
+        return True, ""
+    except Exception as exc:  # noqa: BLE001
+        logger.info(f"[ai_chat] 回复核查器异常（放行）: {exc!r}")
+        return True, ""
+
+
 @get_driver().on_bot_connect
 async def _flush_pending_sends(bot: Bot) -> None:
     """NapCat 重连成功的一刻，把断连窗口里没发出去的回复全部补发。"""
@@ -1263,20 +1315,26 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
             f"【口癖提醒】你最近三条回复都以「{openers[-1]}」开头——"
             "这次换一种完全不同的开口方式，别再用它起步。"})
 
+    # 事实核查素材：本轮注入的记忆/摘要存进这里，回复出来后对照检查
+    # （张冠李戴/编造记忆/贪功三类乱说话，见 _guard_check）
+    guard_materials: list[str] = []
+
     # 长期记忆注入：/记住 存下的事实，按与本条消息的相关性挑出来给模型。
     # 放在检索结果之后、历史之前——记忆是「明确交代过的事」，优先级应高于闲聊历史。
     if cfg.ai_memory_enabled:
         mem_ctx = memory.describe(group_id, text, cfg.ai_memory_max_results)
         if mem_ctx:
             messages.append({"role": "system", "content": mem_ctx})
+            guard_materials.append(mem_ctx)
 
     # 跨群人物记忆：这个人在其他群/私聊被记下的事，按 QQ 号跟过来。
     if cfg.ai_memory_enabled and cfg.ai_memory_user_enabled:
         user_ctx = memory.udescribe(event.user_id)
         if user_ctx:
             messages.append({"role": "system", "content": user_ctx})
+            guard_materials.append(user_ctx)
 
-    # 群聊滚动摘要注入：让机器人知道「群里最近在聊什么」，接得上梗。
+    # 群聊滚动摘要注入：让机器人知道「群里最近在聊什么」，接得住梗。
     # 放在记忆之后、历史之前——摘要和记忆同级，都是背景知识，
     # 且都让位于本轮真正的检索结果（那些排在更前面）。
     if cfg.ai_digest_enabled:
@@ -1296,6 +1354,7 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
                     ),
                 }
             )
+            guard_materials.append(f"群聊摘要：{digest_ctx}")
 
     messages.extend(_history[group_id])
 
@@ -1365,6 +1424,39 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
         return   # 思考吃光 token 导致空正文，同样沉默
 
     reply = tools.strip_speaker_prefix(reply)
+
+    # 事实核查：本轮注入过记忆/摘要时对照检查乱说话，不合格带原因重写一次
+    if cfg.ai_reply_guard_enabled and guard_materials:
+        ok, reason = await _guard_check(reply, text, guard_materials)
+        if not ok:
+            logger.warning(f"[ai_chat] 回复核查不通过，重写: {reason}")
+            try:
+                from .ai_client import chat_kwargs, make_client  # noqa: PLC0415
+
+                fix = messages + [{
+                    "role": "system",
+                    "content": (
+                        f"你刚才那版回复被核查发现问题：{reason}。"
+                        "重写一版：严格依据素材，拿不准的细节直接省略，"
+                        "不要把别人的事说成自己的。语气要求不变。"
+                    ),
+                }]
+                client = make_client(cfg.ai_api_key, cfg.ai_api_base, cfg.ai_proxy)
+                resp2 = await client.chat.completions.create(
+                    **chat_kwargs(
+                        fix, cfg,
+                        max_tokens=cfg.ai_max_tokens,
+                        temperature=cfg.ai_temperature,
+                    ),
+                    timeout=120,
+                )
+                fixed = tools.strip_speaker_prefix(
+                    _strip_inner_monologue((resp2.choices[0].message.content or "").strip())
+                )
+                if fixed:
+                    reply = fixed
+            except Exception as exc:  # noqa: BLE001
+                logger.info(f"[ai_chat] 回复重写失败，沿用原回复: {exc!r}")
 
     # 口癖记录：留这条回复的起头，给下次的口癖自查用（此时 reply 已定稿）
     _reply_openers[group_id].append(reply[:2])
@@ -2156,15 +2248,19 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
         mood_ctx = mood.describe(-user_id)
         if mood_ctx:
             messages.append({"role": "system", "content": mood_ctx})
+    # 事实核查素材：本轮注入的记忆存进这里，回复出来后对照检查
+    guard_materials: list[str] = []
     if cfg.ai_memory_enabled:
         mem_ctx = memory.describe(-user_id, text, cfg.ai_memory_max_results)
         if mem_ctx:
             messages.append({"role": "system", "content": mem_ctx})
+            guard_materials.append(mem_ctx)
     # 跨群人物记忆：私聊里也能想起 TA 在各个群被记下的事。
     if cfg.ai_memory_enabled and cfg.ai_memory_user_enabled:
         user_ctx = memory.udescribe(user_id)
         if user_ctx:
             messages.append({"role": "system", "content": user_ctx})
+            guard_materials.append(user_ctx)
     messages.extend(_private_history[user_id])
 
     # 联网检索（client 模式）：私聊没有群资源 context，但联网照常可用
@@ -2223,6 +2319,39 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
     if not reply:
         return   # 空正文沉默处理
     reply = tools.strip_speaker_prefix(reply)
+
+    # 私聊同款事实核查：对照记忆查乱说话，不合格带原因重写一次
+    if cfg.ai_reply_guard_enabled and guard_materials:
+        ok, reason = await _guard_check(reply, text, guard_materials)
+        if not ok:
+            logger.warning(f"[ai_chat] 私聊回复核查不通过，重写: {reason}")
+            try:
+                from .ai_client import chat_kwargs, make_client  # noqa: PLC0415
+
+                fix = messages + [{
+                    "role": "system",
+                    "content": (
+                        f"你刚才那版回复被核查发现问题：{reason}。"
+                        "重写一版：严格依据素材，拿不准的细节直接省略，"
+                        "不要把别人的事说成自己的。语气要求不变。"
+                    ),
+                }]
+                client = make_client(cfg.ai_api_key, cfg.ai_api_base, cfg.ai_proxy)
+                resp2 = await client.chat.completions.create(
+                    **chat_kwargs(
+                        fix, cfg,
+                        max_tokens=cfg.ai_max_tokens,
+                        temperature=cfg.ai_temperature,
+                    ),
+                    timeout=120,
+                )
+                fixed = tools.strip_speaker_prefix(
+                    _strip_inner_monologue((resp2.choices[0].message.content or "").strip())
+                )
+                if fixed:
+                    reply = fixed
+            except Exception as exc:  # noqa: BLE001
+                logger.info(f"[ai_chat] 私聊回复重写失败，沿用原回复: {exc!r}")
 
     _demote_image_content(_private_history[user_id])
     _private_history[user_id].append({"role": "user", "content": user_content})

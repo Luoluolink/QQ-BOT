@@ -311,17 +311,22 @@ def history_text(text: str, images: list[dict]) -> str:
     return body or marks
 
 
-async def describe_images(bot: Bot, images: list[dict], mode: str = "url") -> str:
+async def describe_images(
+    bot: Bot, images: list[dict], mode: str = "url", prompt: str | None = None
+) -> str:
     """后台图片描述：把群友发的图转成一句话文字描述。
 
     群友发图不 @ 机器人时，图本来只会在历史里留个 [图片] 占位——
     之后有人说「评价一下那张图」就没东西可评。这里用视觉模型
     在后台把图写成描述存进上下文，隔空提问才接得住。
     没拼上任何图或调用失败都返回空串（静默，不影响聊天）。
+    prompt 可自定义（头像分类等内部用途），默认是客观一句话描述。
     """
     if not images:
         return ""
-    prompt = "用一句话客观描述这张图片的内容（30 字以内，说清主体和它是什么样的）。"
+    prompt = prompt or (
+        "用一句话客观描述这张图片的内容（30 字以内，说清主体和它是什么样的）。"
+    )
     content = await build_content(bot, prompt, images[:1], prompt, mode)
     if isinstance(content, str):
         return ""   # 一张图都没拼进去 = 描述失败
@@ -333,7 +338,7 @@ async def describe_images(bot: Bot, images: list[dict], mode: str = "url") -> st
                 **chat_kwargs(
                     [{"role": "user", "content": content}],
                     cfg,
-                    max_tokens=400,
+                    max_tokens=800,   # 思考型模型会吃预算：400 会被思考吃光返回空
                     temperature=0.3,
                 ),
                 timeout=60,
