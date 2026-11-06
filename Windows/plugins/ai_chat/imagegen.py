@@ -747,6 +747,8 @@ async def _comic_storyboard(cands: list[list[tuple[str, str]]]) -> dict | None:
         "你是四格漫画编辑。下面是几个群聊片段，挑最有喜剧张力的一个，"
         "改编成四格漫画分镜。台词必须贴合原话的意思和语气，"
         "可以调整顺序、轻度润色，但不得无中生有；每格气泡台词不超过 18 字。\n"
+        "重要：每格的 who 必须是这句台词原本的说话人，绝不能互换角色——"
+        "漫画会把头像画成这个人，换人=张冠李戴。\n"
         '只输出 JSON（不要任何其他文字）：\n'
         '{"pick": 候选编号, "topic": "一句话主题", '
         '"panels": [{"who": "说话人名字(可空)", "scene": "画面动作描述，不要出现文字", '
@@ -817,9 +819,24 @@ def _fetch_avatar(qq: str) -> bytes | None:
     return None
 
 
-def _comic_prompt(board: dict, char_desc: dict[str, str]) -> str:
-    """把分镜拼成生图提示词。char_desc 是 头像外形描述（回退链用）。"""
+def _comic_prompt(
+    board: dict, char_desc: dict[str, str], avatar_names: list[str] | None = None
+) -> str:
+    """把分镜拼成生图提示词。
+
+    avatar_names 是按上传顺序排列的头像角色名——必须显式告诉模型
+    「第几张图是谁」，否则它自己猜谁是谁，画出来人和台词对不上。
+    """
     parts = ["四格漫画（2x2 分格，粗描边，可爱 Q 版风格，明亮配色）"]
+    if avatar_names:
+        binds = "；".join(
+            f"第{i}张参考图是「{name}」的头像" for i, name in enumerate(avatar_names, 1)
+        )
+        parts.append(
+            f"参考图说明：{binds}。对应名字的角色出场时必须严格长成"
+            "自己参考图的样子（发型/发色/标志配件保持一致），"
+            "没有参考图的角色画成普通 Q 版配角"
+        )
     descs = "；".join(f"{name}：{d}" for name, d in char_desc.items() if d)
     if descs:
         parts.append(f"角色外形（四格中务必保持一致）：{descs}")
@@ -836,7 +853,7 @@ def _comic_prompt(board: dict, char_desc: dict[str, str]) -> str:
         parts.append(line)
     parts.append(
         "所有气泡文字必须是清晰可读的简体中文、无错别字；每格最多一个气泡，"
-        "第4格收尾要有笑点定格感。"
+        "每格的气泡必须画在 who 指定的那个角色头上；第4格收尾要有笑点定格感。"
     )
     return "\n".join(parts)
 
@@ -862,13 +879,26 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
             logger.info("[ai_chat] 漫画生成：日限已用完，放弃")
             return False
 
-        # 说话人 → QQ 号：分镜里 who 用的是名字，回原候选里对回号码
+        # 说话人 → QQ 号：分镜里 who 用的是名字，回原候选里对回号码。
+        # 先精确匹配，再子串兜底（名片「阿萝酱」vs 分镜 who「阿萝」）
         name2qq: dict[str, str] = {}
         for win in cands:
             for speaker, _ in win:
                 m = re.search(r"^(.*?)\((\d{4,12})\)", speaker)
                 if m:
-                    name2qq.setdefault(m.group(1), m.group(2))
+                    name2qq.setdefault(m.group(1).strip(), m.group(2))
+
+        def _qq_for(who: str) -> str | None:
+            who = who.strip()
+            if who in name2qq:
+                return name2qq[who]
+            best = None
+            for name, qq in name2qq.items():
+                if name and (name in who or who in name):
+                    if best is None or len(name) > len(best[0]):
+                        best = (name, qq)
+            return best[1] if best else None
+
         chars: list[tuple[str, str]] = []   # [(名字, qq)]
         for p in board["panels"]:
             if not isinstance(p, dict):
@@ -876,7 +906,7 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
             who = str(p.get("who") or "").strip()
             if not who or any(who == n for n, _ in chars):
                 continue
-            qq = name2qq.get(who)
+            qq = _qq_for(who)
             if qq:
                 chars.append((who, qq))
             if len(chars) >= 2:
@@ -893,13 +923,15 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
         from .ai_client import make_client  # noqa: PLC0415
 
         client = make_client(cfg.ai_imagegen_api_key, cfg.ai_imagegen_api_base, cfg.ai_proxy)
-        prompt_plain = _comic_prompt(board, {})
         if avatars:
+            prompt_edits = _comic_prompt(
+                board, {}, avatar_names=[n for n, _ in avatars]
+            )
             try:
                 resp = await client.images.edit(
                     model=cfg.ai_imagegen_model,
                     image=[(fn, io.BytesIO(raw)) for fn, raw in avatars],
-                    prompt=prompt_plain,
+                    prompt=prompt_edits,
                     size="1024x1024",
                     quality=cfg.ai_imagegen_comic_quality,
                     n=1,
