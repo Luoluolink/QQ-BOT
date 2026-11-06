@@ -717,13 +717,26 @@ def _save_comic_usage() -> None:
         pass
 
 
+def _unlimited_groups() -> set[str]:
+    """漫画不限次的群（.env: AI_COMIC_UNLIMITED_GROUPS，逗号分隔）。"""
+    return {
+        g.strip()
+        for g in str(cfg.ai_comic_unlimited_groups or "").split(",")
+        if g.strip()
+    }
+
+
 def comic_quota_left(group_id: int) -> int:
+    if str(group_id) in _unlimited_groups():
+        return 10 ** 9
     _load_comic_usage()
     return max(0, cfg.ai_comic_daily_limit - _comic_usage.get(str(group_id), 0))
 
 
 def take_comic_quota(group_id: int) -> bool:
-    """占用一次该群今天的漫画额度。管理员路径不应调用此函数。"""
+    """占用一次该群今天的漫画额度。主人路径不应调用此函数。"""
+    if str(group_id) in _unlimited_groups():
+        return True
     _load_comic_usage()
     key = str(group_id)
     if _comic_usage.get(key, 0) >= cfg.ai_comic_daily_limit:

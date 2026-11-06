@@ -4,7 +4,7 @@
 例如 ai_api_key 对应 AI_API_KEY，ai_daily_limit 对应 AI_DAILY_LIMIT。
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class Config(BaseModel):
@@ -1295,9 +1295,22 @@ class Config(BaseModel):
     # QQ空间发帖每日上限（发说说/分享漫画合计）。公开行为要克制，
     # 刷屏是风控最爱的行为模式
     ai_qzone_daily_limit: int = 3
-    # 群聊四格漫画每群每日上限：普通群友每群 3 次；管理员/超级管理员
-    # 触发的不计数也不受限（管理员要演示或玩多少次都行）
-    ai_comic_daily_limit: int = 3
+    # 群聊四格漫画每群每日上限：只有超级用户不计数不受限，
+    # 群主/群管理员按普通群友限
+    ai_comic_daily_limit: int = 5
+    # 漫画不限次的群（逗号分隔群号），配置放 .env 不进仓库
+    ai_comic_unlimited_groups: str = ""
+
+    @field_validator("ai_comic_unlimited_groups", mode="before")
+    @classmethod
+    def _comic_groups_as_str(cls, v):
+        # .env 值会被 pydantic-settings 先按 JSON 解析：裸群号变 int、
+        # 逗号分隔会变 list——统一拍平回字符串
+        if isinstance(v, int):
+            return str(v)
+        if isinstance(v, (list, tuple)):
+            return ",".join(str(x) for x in v)
+        return v
 
     # ---------- 情绪与自动记忆 ----------
     # 情绪状态机：被夸/被怼/被戳/被道谢等事件推动每组一个会衰减的心情，
