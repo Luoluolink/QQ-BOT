@@ -1300,6 +1300,9 @@ class Config(BaseModel):
     ai_qzone_bridge: str = "http://127.0.0.1:5700"
     # 每天自动发一条空间心情（随机时段，像真人不是打卡）
     ai_qzone_auto_mood: bool = True
+    # 手滑模拟：每次回复有这个概率出现一个错字然后撤回重发
+    # （KouriChat 式拟人，0 关闭）
+    ai_human_typo: float = 0.08
     # 生成的漫画经模型判定有趣后自动发空间
     ai_qzone_auto_share_comic: bool = True
     # 群聊四格漫画每群每日上限：只有超级用户不计数不受限，

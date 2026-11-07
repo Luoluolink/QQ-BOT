@@ -1521,6 +1521,25 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
     bubbles = tools.split_reply_bubbles(reply) if cfg.ai_reply_split else [reply]
     sticker = await _maybe_sticker(bot, text, group_id)
 
+    # 气泡数量随机化：真人连发的条数不稳定，偶尔把相邻两条并一条
+    if len(bubbles) > 1 and random.random() < 0.15:
+        j = random.randrange(len(bubbles) - 1)
+        bubbles[j] = bubbles[j] + bubbles[j + 1]
+        bubbles.pop(j + 1)
+
+    # 手滑模拟（KouriChat 式拟人）：小概率某条出现一个错字，
+    # 发出去 1 秒多后撤回，再重发正确的——真人手滑的真实形态
+    typo_plan = None
+    if cfg.ai_human_typo > 0 and random.random() < cfg.ai_human_typo:
+        cand_idx = [i for i, b in enumerate(bubbles) if len(b) >= 6]
+        if cand_idx:
+            ti = random.choice(cand_idx)
+            correct = bubbles[ti]
+            k = random.randint(1, len(correct) - 2)
+            typo = correct[:k] + correct[k + 1] + correct[k] + correct[k + 2:]
+            typo_plan = (ti, correct, typo)
+            bubbles[ti] = typo
+
     # 拟人延迟：真人打字要时间，长回复更久——秒回的机器感很重
     await asyncio.sleep(min(0.8 + len(reply) * 0.02, 4.0) + random.uniform(0.3, 1.2))
 
@@ -1528,8 +1547,24 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
         last = idx == len(bubbles) - 1
         segments: list = []
         plain: list = []
-        # 引用要更克制：人类一般懒得引用——只有对方自己用了引用
-        # （在回某条具体消息）才挂，平时直接说话
+        # 手滑流程：错字版先用 call_api 发出（拿 message_id），停一拍撤回，
+        # 然后把这一格换回正确文案走正常发送
+        if typo_plan and idx == typo_plan[0]:
+            try:
+                sent = await bot.call_api(
+                    "send_group_msg",
+                    group_id=group_id,
+                    message=MessageSegment.text(typo_plan[2]),
+                )
+                await asyncio.sleep(random.uniform(0.9, 1.6))
+                await bot.delete_msg(message_id=int(sent["message_id"]))
+            except Exception:  # noqa: BLE001
+                pass   # 撤回失败就随它去——错字留在那也像真人手滑
+            bubble = typo_plan[1]
+        # 标点拟人：群聊里真人懒得打句号——剥掉气泡结尾的句号串
+        bubble = tools.humanize_bubble(bubble)
+        # 引用要克制：只有对方自己用了引用（在回某条具体消息）才挂——
+        # 人类一般懒得引用
         if idx == 0 and cfg.ai_reply_quote:
             has_reply_seg = any(seg.type == "reply" for seg in event.message)
             if has_reply_seg:
@@ -2430,6 +2465,7 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
 
     for idx, bubble in enumerate(bubbles):
         last = idx == len(bubbles) - 1
+        bubble = tools.humanize_bubble(bubble)
         segments: list = [MessageSegment.text(bubble)]
         if last and sticker is not None:
             segments.append(sticker)

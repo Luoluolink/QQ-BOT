@@ -303,6 +303,18 @@ _AI_TAIL_RES = (
 )
 
 
+def humanize_bubble(text: str) -> str:
+    """气泡标点拟人化：群聊里真人懒得打句号——剥掉结尾的句号串。
+
+    问号/感叹号/省略号/波浪号保留（它们是情绪的一部分）；
+    中间的句号不动（长句内部照常断句）。
+    """
+    text = text.rstrip()
+    while text.endswith("。"):
+        text = text[:-1].rstrip()
+    return text
+
+
 def strip_ai_tail(text: str) -> str:
     """剥掉模型回复结尾的 AI 客套尾巴（最多剥两层）。"""
     for _ in range(2):
