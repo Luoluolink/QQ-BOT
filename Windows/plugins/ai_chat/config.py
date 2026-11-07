@@ -1325,6 +1325,19 @@ class Config(BaseModel):
             return ",".join(str(x) for x in v)
         return v
 
+    # 低调群（逗号分隔群号）：不主动发言、不连续对话——被 @ 才说话，
+    # 配置放 .env 不进仓库
+    ai_low_profile_groups: str = ""
+
+    @field_validator("ai_low_profile_groups", mode="before")
+    @classmethod
+    def _low_profile_groups_as_str(cls, v):
+        if isinstance(v, int):
+            return str(v)
+        if isinstance(v, (list, tuple)):
+            return ",".join(str(x) for x in v)
+        return v
+
     # ---------- 情绪与自动记忆 ----------
     # 情绪状态机：被夸/被怼/被戳/被道谢等事件推动每组一个会衰减的心情，
     # 注入系统提示影响语气。关掉就是永远平静的默认状态。

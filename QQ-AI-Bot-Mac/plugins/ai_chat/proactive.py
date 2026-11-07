@@ -133,9 +133,21 @@ def _rule(bot: Bot, event: Event) -> bool:
     「这条消息到底可不可能触发」的结构判断：群里、没 @ 我、不是命令、
     不在连续对话中（对方正跟机器人说话，由正常回复路径接，别插嘴）。
     """
+    if not isinstance(event, GroupMessageEvent):
+        return False
+    # 低调群：不主动发言（被 @ 才说话）
+    from .config import Config as _C  # noqa: PLC0415
+    from nonebot import get_plugin_config as _gpc  # noqa: PLC0415
+
+    low = {
+        g.strip()
+        for g in str(_gpc(_C).ai_low_profile_groups or "").split(",")
+        if g.strip()
+    }
+    if str(event.group_id) in low:
+        return False
     return (
-        isinstance(event, GroupMessageEvent)
-        and cfg.ai_proactive_enabled
+        cfg.ai_proactive_enabled
         and not at_me(event, bot.self_id)
         and not followup.active(event.group_id, event.user_id)
         and not event.get_plaintext().lstrip().startswith(("/", "！", "?", "？"))

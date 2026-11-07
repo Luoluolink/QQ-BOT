@@ -1201,6 +1201,14 @@ def _followup_settle(event: GroupMessageEvent, group_id: int) -> None:
     「接着说」扣一次额度。发失败不结算，不白占人家的额度。"""
     if not cfg.ai_followup_enabled:
         return
+    # 低调群：不搞连续对话——被 @ 才说话，说完就闭嘴
+    low = {
+        g.strip()
+        for g in str(cfg.ai_low_profile_groups or "").split(",")
+        if g.strip()
+    }
+    if str(group_id) in low:
+        return
     if tools.at_me(event, event.self_id):
         followup.activate(
             group_id, event.user_id,
