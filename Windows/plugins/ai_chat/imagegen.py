@@ -619,7 +619,13 @@ async def generate_and_send(
 
 
     if mode == "auto":
-        mode = "character" if is_character_topic(topic) else "free"
+        # 角色模式（表情包）只接短而玩的请求；带详细描述/画风要求的
+        # 长提示词按用户原话画（自由模式）——「生成一张你自己的照片，
+        # 日系线稿…」这种被硬掰成表情包是实测踩过的坑
+        if is_character_topic(topic) and len(topic) <= 25:
+            mode = "character"
+        else:
+            mode = "free"
 
     if mode == "character":
         prompt, phrase = await _rewrite_prompt(topic)
