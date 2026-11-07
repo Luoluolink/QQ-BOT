@@ -133,25 +133,22 @@ def _rule(bot: Bot, event: Event) -> bool:
     「这条消息到底可不可能触发」的结构判断：群里、没 @ 我、不是命令、
     不在连续对话中（对方正跟机器人说话，由正常回复路径接，别插嘴）。
     """
-    if not isinstance(event, GroupMessageEvent):
-        return False
-    # 低调群：不主动发言（被 @ 才说话）
-    from .config import Config as _C  # noqa: PLC0415
-    from nonebot import get_plugin_config as _gpc  # noqa: PLC0415
-
-    low = {
-        g.strip()
-        for g in str(_gpc(_C).ai_low_profile_groups or "").split(",")
-        if g.strip()
-    }
-    if str(event.group_id) in low:
-        return False
     return (
-        cfg.ai_proactive_enabled
+        isinstance(event, GroupMessageEvent)
+        and cfg.ai_proactive_enabled
         and not at_me(event, bot.self_id)
         and not followup.active(event.group_id, event.user_id)
         and not event.get_plaintext().lstrip().startswith(("/", "！", "?", "？"))
     )
+
+
+def _low_profile(group_id: int) -> bool:
+    """低调群：偶尔参与聊天，但不抢话、不主动开话题。"""
+    return str(group_id) in {
+        g.strip()
+        for g in str(cfg.ai_low_profile_groups or "").split(",")
+        if g.strip()
+    }
 
 
 proactive = on_message(rule=Rule(_rule), priority=60, block=False)
@@ -207,6 +204,9 @@ async def handle_proactive(bot: Bot, event: GroupMessageEvent) -> None:
     probability = _dynamic_probability(group_id, now)
     if not hit_keyword:
         probability *= cfg.ai_proactive_generic_ratio
+    # 低调群：偶尔参与聊天——概率乘数压到接近静默
+    if _low_profile(group_id):
+        probability *= cfg.ai_low_profile_proactive_factor
     if random.random() >= probability:
         return
     # ---- 闸门 4：冷却 + 每日额度 ----

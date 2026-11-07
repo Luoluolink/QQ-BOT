@@ -1325,9 +1325,11 @@ class Config(BaseModel):
             return ",".join(str(x) for x in v)
         return v
 
-    # 低调群（逗号分隔群号）：不主动发言、不连续对话——被 @ 才说话，
-    # 配置放 .env 不进仓库
+    # 低调群（逗号分隔群号）：不连续对话、不主动开话题，只以
+    # ai_low_profile_proactive_factor 的概率偶尔参与聊天
     ai_low_profile_groups: str = ""
+    # 低调群的主动发言概率乘数（在动态概率之上再乘，0.25 ≈ 正常群的 1/4）
+    ai_low_profile_proactive_factor: float = 0.25
 
     @field_validator("ai_low_profile_groups", mode="before")
     @classmethod
