@@ -1262,6 +1262,9 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
 
     # 纯图片消息以前会在这里被 `if not text` 直接丢掉，
     # 连冷却和额度都不走，表现就是「发图没反应」。现在只要带了图就继续。
+    # 手打文本 @ 的名字前缀也剥掉（「@吉普莉尔 生成一张…」→「生成一张…」），
+    # 不然名字会混进正文和生图主题里
+    text = re.sub(r"^\s*@吉普莉尔\s*", "", text).strip() or text
     # 注意 text 里已经去掉了对机器人自己的 @，所以「只 @ 机器人不说话」仍会被忽略。
     if not text and not images:
         return

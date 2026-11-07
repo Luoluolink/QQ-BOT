@@ -192,6 +192,7 @@ def at_me(event: Event, self_id: str | int) -> bool:
     OneBot v11 适配器的 _check_at_me 只认「第一段是 @机器人」或「最后一段是
     @机器人」，而「[图片] @机器人 文字」这种 @ 夹在中间的消息会被漏掉，
     导致 to_me=False、所有需要 @ 的匹配器全部沉默。这里补上全位置判断。
+    另外：有人手打「@吉普莉尔 xxx」而不是用官方 at 段——纯文本 @ 也算在叫。
     """
     try:
         from nonebot.adapters.onebot.v11 import MessageEvent
@@ -201,10 +202,28 @@ def at_me(event: Event, self_id: str | int) -> bool:
         return False
     if getattr(event, "to_me", False):
         return True
-    return any(
+    if any(
         seg.type == "at" and str(seg.data.get("qq", "")) == str(self_id)
         for seg in event.message
-    )
+    ):
+        return True
+    # 手打文本 @：消息以 @+机器人名字 开头（名字取群名片/昵称/默认吉普莉尔）
+    text = event.get_plaintext().lstrip()
+    if not text.startswith("@"):
+        return False
+    names = {"吉普莉尔"}
+    try:
+        from . import members as _members  # noqa: PLC0415
+
+        idx = _members._cache.get(int(getattr(event, "group_id", 0) or 0))
+        if idx:
+            me = idx.by_qq(int(self_id))
+            if me:
+                names.update(n.strip() for n in me.names if n.strip())
+    except Exception:  # noqa: BLE001
+        pass
+    body = text[1:].lstrip()
+    return any(body.startswith(n) for n in names if n)
 
 
 def speaker_tag(card: str, nickname: str, user_id) -> str:
