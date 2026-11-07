@@ -544,13 +544,20 @@ def _safe_name(topic: str) -> str:
 
 
 def _cache_find(topic: str) -> Path | None:
-    """按主题找已生成过的表情：文件名包含主题关键词就算命中。"""
+    """按主题找已生成过的表情：双向前缀吻合（≥10 字）才算同一主题。
+
+    之前前 8 字子串匹配太松——用户的自由模式长提示词撞上
+    角色模式错存的旧表情，把同一张错图反复端出来。
+    """
     key = _safe_name(topic)
-    if not key:
+    if len(key) < 10:
         return None
     d = _cache_dir()
     for p in sorted(d.glob("*.png")):
-        if key[:8] in p.stem:      # 前 8 字吻合即视为同一主题
+        stem = p.stem
+        if len(stem) < 10:
+            continue
+        if stem.startswith(key[:10]) or key.startswith(stem[:10]):
             return p
     return None
 
@@ -601,8 +608,18 @@ async def generate_and_send(
 
     from . import ambient  # noqa: PLC0415  函数内导入避免环
 
-    # ---- 缓存命中：同样的主题画过就直接发旧的，省生成费和时间
-    if cfg.ai_imagegen_cache:
+    # ---- 先定模式：角色模式（表情包）只接短而玩的请求；带详细描述/
+    # 画风要求的长提示词按用户原话画（自由模式）——「生成一张你自己的
+    # 照片，日系线稿…」被硬掰成表情包是实测踩过的坑
+    if mode == "auto":
+        if is_character_topic(topic) and len(topic) <= 25:
+            mode = "character"
+        else:
+            mode = "free"
+
+    # ---- 缓存命中：只在角色模式下生效（表情包复用旧图合理）；
+    # 自由模式的用户提示词永远现画，绝不被缓存里的旧表情顶掉
+    if cfg.ai_imagegen_cache and mode == "character":
         hit = _cache_find(topic)
         if hit is not None:
             logger.info(f"[ai_chat] 表情包缓存命中：{hit.name}")
@@ -616,16 +633,6 @@ async def generate_and_send(
                 return True
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"[ai_chat] 缓存表情发送失败，重新生成: {exc!r}")
-
-
-    if mode == "auto":
-        # 角色模式（表情包）只接短而玩的请求；带详细描述/画风要求的
-        # 长提示词按用户原话画（自由模式）——「生成一张你自己的照片，
-        # 日系线稿…」这种被硬掰成表情包是实测踩过的坑
-        if is_character_topic(topic) and len(topic) <= 25:
-            mode = "character"
-        else:
-            mode = "free"
 
     if mode == "character":
         prompt, phrase = await _rewrite_prompt(topic)
