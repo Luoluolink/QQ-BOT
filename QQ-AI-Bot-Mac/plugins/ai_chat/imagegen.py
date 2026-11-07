@@ -363,13 +363,19 @@ _REWRITE_FREE_SYSTEM = (
 
 
 async def _rewrite_free_prompt(topic: str) -> str:
-    """自由模式：把话题改写成完整英文生图提示词（单行）。失败用兜底。"""
-    fallback = (
-        "a cute anime illustration, vibrant colors, clean composition, "
-        "high detail, cheerful and lively"
-    )
+    """自由模式：把话题改写成完整英文生图提示词（单行）。失败用原话。
+
+    长提示词（≥30 字）说明用户自己已经把画面描述清楚了——直通不改写：
+    改写超时会把它换成一句通用废话（实测踩过：用户精心写的日系线稿
+    描述被兜底模板顶掉）。gpt-image 处理中文提示词没问题。
+    """
     if not topic:
-        return fallback
+        return (
+            "a cute anime illustration, vibrant colors, clean composition, "
+            "high detail, cheerful and lively"
+        )
+    if len(topic) >= 30:
+        return topic
     try:
         from .ai_client import chat_kwargs, make_client
 
@@ -392,12 +398,12 @@ async def _rewrite_free_prompt(topic: str) -> str:
             if len(ln) >= 10:
                 lowered = ln.lower()
                 if any(w in lowered for w in _BANNED_EXPR_WORDS):
-                    logger.warning(f"[ai_chat] 自由模式改写含敏感词，用兜底: {ln!r}")
-                    return fallback
+                    logger.warning(f"[ai_chat] 自由模式改写含敏感词，用原话: {ln!r}")
+                    return topic
                 return ln
     except Exception as exc:  # noqa: BLE001
-        logger.warning(f"[ai_chat] 自由模式提示词改写失败，用兜底: {exc!r}")
-    return fallback
+        logger.warning(f"[ai_chat] 自由模式提示词改写失败，用原话: {exc!r}")
+    return topic
 
 
 def _find_reference() -> Path | None:
@@ -583,7 +589,10 @@ def _cache_save(topic: str, image: bytes) -> None:
 
 
 async def generate_and_send(
-    bot: Bot, event: GroupMessageEvent, topic: str, mode: str = "auto"
+    bot: Bot,
+    event: GroupMessageEvent,
+    topic: str,
+    mode: str = "auto",
 ) -> bool:
     """全流程：改写提示词 → 生图 →（角色模式加文字）→ 发出。成功返回 True。
 
@@ -594,9 +603,10 @@ async def generate_and_send(
       不加文字。
     - "auto"（默认）按 is_character_topic(topic) 自动分流。
 
+    notice=True（用户主动要求的生图）时失败要发一条说明——别人等着图呢，
+    装死比失败更伤人设；机器人自发的即兴生图仍静默。
     设计为后台任务（调用方 create_task）：生图要 10-30 秒，
-    不能占着对话流程。任何一步失败都静默返回 False——
-    顶多少一张图，不能让聊天流程陪葬。
+    不能占着对话流程。
     """
     if not cfg.ai_imagegen_enabled or not cfg.ai_imagegen_api_key:
         if cfg.ai_imagegen_enabled:
