@@ -1271,6 +1271,19 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
         from . import digest as digest_mod  # noqa: PLC0415
 
         digest_ctx = digest_mod.current(gid)
+        if digest_ctx:
+            # 摘要新鲜度：摘要里最新素材超过时间窗（3h）就当没有——
+            # 别拿早上八点的话题画下午的漫画（大肥鱼段就是这么回来的）
+            age = digest_mod.summary_newest_age(gid)
+            if age is None or age > cfg.ai_comic_material_hours * 3600:
+                try:
+                    await bot.send(
+                        event,
+                        Message("最近三小时的聊天还没攒出能画的段子，先聊会儿天再来找我"),
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                return False
         if digest_ctx and _banned_keywords:
             kept = [
                 s.strip()

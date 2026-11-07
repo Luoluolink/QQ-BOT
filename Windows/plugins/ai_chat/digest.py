@@ -41,7 +41,10 @@ _STATE_PATH = (
 # 每群当前摘要（None = 还没有）
 _digest: Dict[int, str] = {}
 # 每群未压缩的新消息缓冲（带发言人前缀，和 _recent 同格式）
-_pending: DefaultDict[int, Deque[str]] = defaultdict(lambda: deque(maxlen=120))
+_pending: DefaultDict[int, Deque[tuple[float, str]]] = defaultdict(
+    lambda: deque(maxlen=120)
+)
+_summary_newest: dict[str, float] = {}   # 群号 → 当前摘要里最新素材的时间戳
 # 每群上次压缩时间 / 今日已压次数 / 今日日期
 _last_compress: Dict[int, float] = {}
 _usage: DefaultDict[int, int] = defaultdict(int)
@@ -67,6 +70,10 @@ def _load() -> None:
         for key, value in groups.items():
             if isinstance(key, str) and key.lstrip("-").isdigit() and isinstance(value, str) and value:
                 _digest[int(key)] = value
+        sn = (raw or {}).get("summary_newest") or {}
+        for key, value in sn.items():
+            if isinstance(key, str) and isinstance(value, (int, float)):
+                _summary_newest[key] = float(value)
     except (OSError, ValueError):
         pass
     _last_save = time.time()
@@ -83,7 +90,13 @@ def _save(force: bool = False) -> None:
         _STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         tmp = _STATE_PATH.with_suffix(".tmp")
         tmp.write_text(
-            json.dumps({"groups": {str(k): v for k, v in _digest.items()}}, ensure_ascii=False),
+            json.dumps(
+                {
+                    "groups": {str(k): v for k, v in _digest.items()},
+                    "summary_newest": {k: v for k, v in _summary_newest.items()},
+                },
+                ensure_ascii=False,
+            ),
             encoding="utf-8",
         )
         tmp.replace(_STATE_PATH)  # 原子替换，避免写一半损坏
@@ -101,12 +114,25 @@ def observe(group_id: int, speaker: str, text: str, now: float) -> None:
     """
     if not text:
         return
-    _pending[group_id].append(f"【{speaker}】{text[:80]}")
+    _pending[group_id].append((now, f"【{speaker}】{text[:80]}"))
 
 
 def current(group_id: int) -> str:
     """本群当前摘要，没有则返回空串。"""
     return _digest.get(group_id, "")
+
+
+def summary_newest_age(group_id: int) -> float | None:
+    """当前摘要里最新一条素材的年龄（秒）。没有记录过返回 None。
+
+    摘要是滚动合并的：光看更新时间不够——两小时前更新的摘要里
+    完全可能装着早上八点的话题。用「最新素材的时间戳」衡量新鲜度，
+    漫画选段的摘要兜底靠它挡旧话题。
+    """
+    ts = _summary_newest.get(str(group_id))
+    if ts is None:
+        return None
+    return time.time() - ts
 
 
 def _ready(group_id: int, now: float) -> bool:
@@ -119,7 +145,7 @@ def _ready(group_id: int, now: float) -> bool:
 def _build_messages(group_id: int) -> list[dict]:
     """组装压缩请求：旧摘要 + 待压缩的新消息。"""
     old = _digest.get(group_id, "")
-    new_lines = "\n".join(_pending[group_id])
+    new_lines = "\n".join(line for _, line in _pending[group_id])
     system = (
         "你是群聊记录整理员。把「已有摘要」和「新聊天记录」融合成一份新摘要。\n"
         "要求：\n"
@@ -164,7 +190,7 @@ async def _compress_locked(group_id: int, now: float) -> str | None:
     if _usage[group_id] >= cfg.ai_digest_daily_limit:
         return None
 
-    batch = list(_pending[group_id])
+    batch = list(_pending[group_id])   # [(ts, line), ...]
     try:
         from .ai_client import chat_kwargs, make_client
 
@@ -191,6 +217,12 @@ async def _compress_locked(group_id: int, now: float) -> str | None:
         summary = summary[: cfg.ai_digest_max_chars - 1] + "…"
 
     _digest[group_id] = summary
+    # 摘要里最新一条素材的时间：摘要整体的新鲜度就看它（漫画选段用）
+    try:
+        newest = max(ts for ts, _ in batch)
+    except ValueError:
+        newest = now
+    _summary_newest[str(group_id)] = newest
     # 防御性弹出：快照与弹出之间理论上有别的入口动过队列（锁内不该发生，
     # 但坏数据宁可少弹也不能崩）
     for _ in batch:
