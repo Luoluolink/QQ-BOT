@@ -1143,37 +1143,46 @@ def _fetch_avatar(qq: str) -> bytes | None:
     return None
 
 
-# 漫画统一画风（用户指定的偏好：软萌可爱，配色鲜亮且随内容走）
+# 漫画统一画风：以 assets/comic_style_ref.png 为准（真图锚定），
+# 文字描述只做辅助。参考图缺失时才退回纯文字描述。
 _COMIC_STYLE = (
-    "四格漫画，2x2 分格。画风：线条柔软有粗细变化的描边，"
-    "圆润软萌的 Q 版角色，大眼睛带星光高光、脸颊腮红；"
-    "色彩鲜明饱满、饱和度中高、色块层次丰富，阴影用同色系深色而不是灰白，"
-    "禁止大面积发灰发白的淡色；背景干净但有色块和装饰（音符、星星、光环）；"
-    "对话气泡圆角白底、描边与文字同色系；"
-    "配色根据这一格的场景、时间和情绪选择协调的主色调"
-    "（如白天户外用明亮的暖色、深夜用浓郁的深色、海边用蓝色系）"
+    "画风参考第 1 张图：洋红与粉紫色调的梦幻柔光风格，"
+    "高饱和品红粉色、粉紫渐变背景带淡淡光晕和彩虹色光斑，"
+    "圆润软萌 Q 版、大眼睛星光高光、厚涂感腮红、线条柔软有粗细变化。"
+    "四格漫画，2x2 分格，对话气泡圆角白底、描边与文字用深紫红色"
 )
 
 
 def _comic_prompt(
-    board: dict, char_desc: dict[str, str], avatar_names: list[str] | None = None
+    board: dict,
+    char_desc: dict[str, str],
+    avatar_names: list[str] | None = None,
+    style_ref: bool = False,
 ) -> str:
     """把分镜拼成生图提示词。
 
     avatar_names 是按上传顺序排列的头像角色名——必须显式告诉模型
     「第几张图是谁」，否则它自己猜谁是谁，画出来人和台词对不上。
+    style_ref=True 表示第 1 张图是画风参考（角色头像从第 2 张开始编号）。
     """
     parts = [_COMIC_STYLE]
+    off = 1 if style_ref else 0
+    if style_ref:
+        parts.append(
+            "第1张图是画风参考：只参考它的画风、配色、气泡样式和质感，"
+            "忽略那张图里画的角色和内容——角色外形以下方的头像参考图为准"
+        )
     if avatar_names:
         binds = "；".join(
-            f"第{i}张参考图是「{name}」的头像" for i, name in enumerate(avatar_names, 1)
+            f"第{i + off}张参考图是「{name}」的头像"
+            for i, name in enumerate(avatar_names, 1)
         )
         parts.append(
-            f"漫画共 {len(avatar_names)} 个主要角色。参考图说明：{binds}。"
-            "每一张参考图都必须严格遵循——对应名字的角色出场时长成自己参考图的样子"
-            "（发型/发色/标志配件保持一致），两张不能长得像、不能混合特征、"
+            f"漫画共 {len(avatar_names)} 个主要角色。头像说明：{binds}。"
+            "每一张头像参考图都必须严格遵循——对应名字的角色出场时长成自己参考图的样子"
+            "（发型/发色/标志配件保持一致），头像之间不能长得像、不能混合特征、"
             "不能只画其中一张的样子；"
-            "没有参考图的角色必须画出明显不同的外形（不同的发色发型衣服），"
+            "没有头像参考的角色必须画出明显不同的外形（不同的发色发型衣服），"
             "绝不能和有参考图的角色混淆，更不能替有参考图的角色出场说话"
         )
     descs = "；".join(f"{name}：{d}" for name, d in char_desc.items() if d)
@@ -1236,7 +1245,19 @@ async def _classify_avatar(bot: Bot, qq: str) -> dict:
     }
 
 
+_COMIC_STYLE_REF = (
+    Path(__file__).resolve().parent.parent.parent / "assets" / "comic_style_ref.png"
+)
+
 _image_api_dead_until = 0.0   # 生图接口 429 额度耗尽后的短路截止时间
+
+
+def _style_ref_bytes() -> bytes | None:
+    """画风参考图（用户提供的样板漫画）。缺失返回 None，退回纯文字描述。"""
+    try:
+        return _COMIC_STYLE_REF.read_bytes()
+    except OSError:
+        return None
 
 
 def image_api_dead() -> bool:
@@ -1488,17 +1509,21 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
             f"头像参考 {len(avatars)} 张"
         )
         image: bytes | None = None
+        style_bytes = await asyncio.to_thread(_style_ref_bytes)
         from .ai_client import make_client  # noqa: PLC0415
 
         client = make_client(cfg.ai_imagegen_api_key, cfg.ai_imagegen_api_base, cfg.ai_proxy)
-        if avatars:
+        # 画风参考图放第 1 张（只借画风），头像从第 2 张起（管角色外形）
+        if style_bytes:
+            edit_images = [("style_ref.png", style_bytes)] + avatars
             prompt_edits = _comic_prompt(
-                board, char_desc, avatar_names=[n for n, _ in avatars]
+                board, char_desc,
+                avatar_names=[n for n, _ in avatars], style_ref=True,
             )
             try:
                 resp = await client.images.edit(
                     model=cfg.ai_imagegen_model,
-                    image=[(fn, io.BytesIO(raw)) for fn, raw in avatars],
+                    image=[(fn, io.BytesIO(raw)) for fn, raw in edit_images],
                     prompt=prompt_edits,
                     size="1024x1024",
                     quality=cfg.ai_imagegen_comic_quality,
@@ -1510,13 +1535,24 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
                 logger.warning(f"[ai_chat] 漫画头像参考 edits 失败，退回纯文本: {exc!r}")
         if image is None:
             try:
-                resp = await client.images.generate(
-                    model=cfg.ai_imagegen_model,
-                    prompt=_comic_prompt(board, char_desc),
-                    size="1024x1024",
-                    quality=cfg.ai_imagegen_comic_quality,
-                    n=1,
-                )
+                if style_bytes:
+                    # 有画风参考就走 edits：连头像都没有时也锚住画风
+                    resp = await client.images.edit(
+                        model=cfg.ai_imagegen_model,
+                        image=[("style_ref.png", io.BytesIO(style_bytes))],
+                        prompt=_comic_prompt(board, char_desc, style_ref=True),
+                        size="1024x1024",
+                        quality=cfg.ai_imagegen_comic_quality,
+                        n=1,
+                    )
+                else:
+                    resp = await client.images.generate(
+                        model=cfg.ai_imagegen_model,
+                        prompt=_comic_prompt(board, char_desc),
+                        size="1024x1024",
+                        quality=cfg.ai_imagegen_comic_quality,
+                        n=1,
+                    )
                 image = _img_bytes(resp.data[0])
             except Exception as exc:  # noqa: BLE001
                 _mark_api_dead_if_quota(exc)
