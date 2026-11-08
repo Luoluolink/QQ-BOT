@@ -320,5 +320,6 @@ async def handle_proactive(bot: Bot, event: GroupMessageEvent) -> None:
 
     try:
         await bot.send(event, Message(reply))
+        ambient.record(group_id, "我", reply)
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[ai_chat] 主动发言发送失败: {exc!r}")

@@ -72,8 +72,15 @@ def recent_lines_since(group_id: int, seconds: float, limit: int = 40) -> list[s
 
 
 def describe(group_id: int, count: int = 6) -> str:
-    """拼成注入给模型的背景块。没有记录返回空串。"""
-    lines = recent_lines(group_id, count)
+    """拼成注入给模型的背景块。没有记录返回空串。
+
+    过滤掉【我】开头的行（机器人自己的回复）——背景是"别人在聊什么"，
+    混入自己刚说过的话会诱发自我复读。漫画选段用的是另一条不过滤的路径。
+    """
+    lines = [
+        ln for ln in recent_lines(group_id, count)
+        if not ln.startswith("【我】")
+    ]
     if not lines:
         return ""
     return (

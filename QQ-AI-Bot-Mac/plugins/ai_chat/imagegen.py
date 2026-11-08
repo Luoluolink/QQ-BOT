@@ -1660,6 +1660,12 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
             who = str(p.get("who") or "").strip()
             if not who or any(who == n for n, _ in chars):
                 continue
+            # 「我」= 机器人自己的神回复也入画，形象用新底图（立绘）
+            if who == "我":
+                chars.append(("我", "bot"))
+                if len(chars) >= 3:
+                    break
+                continue
             qq = _qq_for(who)
             if not qq and member_index is not None:
                 qq = _members.resolve_by_name(member_index, who)
@@ -1684,8 +1690,15 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
         # 人物/动物头像 → edits 参考图，角色长成头像那样；
         # 标志/徽章 → 简单衣服印标志、整体取标志配色；
         # 风景/植物等其他 → 只取配色生成角色
-        infos = await asyncio.gather(*(_classify_avatar(bot, qq) for _, qq in chars))
-        avatar_infos = {name: info for (name, _), info in zip(chars, infos) if info}
+        to_classify = [(n, q) for n, q in chars if q != "bot"]
+        infos = await asyncio.gather(*(_classify_avatar(bot, q) for _, q in to_classify))
+        avatar_infos = {name: info for (name, _), info in zip(to_classify, infos) if info}
+        for name, qq in chars:
+            if qq == "bot":
+                avatar_infos.setdefault(
+                    name,
+                    {"type": "character", "desc": "粉色长发、白色连帽衫、光环的机器人自己", "colors": "粉色、白色"},
+                )
         char_desc: dict[str, str] = {}
         for name, _ in chars:
             info = avatar_infos.get(name)
@@ -1710,7 +1723,11 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
         for name, qq in chars:
             if avatar_infos.get(name, {}).get("type") not in ("character", "animal"):
                 continue
-            raw = await asyncio.to_thread(_fetch_avatar, qq)
+            if qq == "bot":
+                ref_path = _find_reference()
+                raw = await asyncio.to_thread(lambda: ref_path.read_bytes()) if ref_path else None
+            else:
+                raw = await asyncio.to_thread(_fetch_avatar, qq)
             if raw:
                 avatars.append((f"{name}.png", raw))
             else:
