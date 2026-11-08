@@ -848,7 +848,7 @@ def _pick_candidates(lines: list[str], top: int = 3) -> list[list[tuple[str, str
 
 
 # ---- 漫画选段黑名单：话题关键词 + 行使用计数，全部持久化 ----
-# 血泪教训：行计数放内存，重启一清零，「偷Lora」那段连画了 5 遍。
+# 血泪教训：行计数放内存，重启一清零，某个热门话题段连画了 5 遍。
 # 行级指纹计数（窗口内任一行用过 2 次整窗排除）+ 关键词永久屏蔽。
 _BLACKLIST_PATH = (
     Path(__file__).resolve().parent.parent.parent / "data" / "comic_blacklist.json"
@@ -1312,14 +1312,14 @@ async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
     digest_fp_used = None
     if not cands:
         # ambient 是内存缓冲，重启就清空——太薄时退用滚动摘要当素材。
-        # 但摘要同样可能写满被屏蔽的话题（偷Lora 段就是这么漏网的）：
+        # 但摘要同样可能写满被屏蔽的话题（某个被屏蔽的话题段就是这么漏网的）：
         # 把含屏蔽词的句子剔掉，剩下的够一段才用，否则明说拒绝
         from . import digest as digest_mod  # noqa: PLC0415
 
         digest_ctx = digest_mod.current(gid)
         if digest_ctx:
             # 摘要新鲜度：摘要里最新素材超过时间窗（3h）就当没有——
-            # 别拿早上八点的话题画下午的漫画（大肥鱼段就是这么回来的）
+            # 别拿早上八点的话题画下午的漫画（某个旧话题段就是这么回来的）
             age = digest_mod.summary_newest_age(gid)
             if age is None or age > cfg.ai_comic_material_hours * 3600:
                 try:

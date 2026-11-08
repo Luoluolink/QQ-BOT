@@ -17,3 +17,7 @@ cache/
 # 编辑器
 .vscode/
 .idea/
+
+logs/
+stickers/generated/
+sticker_backup_*/

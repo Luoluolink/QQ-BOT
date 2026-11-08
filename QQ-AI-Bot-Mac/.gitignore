@@ -35,3 +35,8 @@ web/bg-ai-draft*.png
 web/icon-ai-draft.png
 web/icon-rounded-preview.png
 web/Redraw_*.png
+
+# 运行时产物：日志/聊天缓存/生成的表情包/备份，含个人信息不进仓库
+logs/
+stickers/generated/
+sticker_backup_*/
