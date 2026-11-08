@@ -1120,6 +1120,7 @@ def _imagegen_rule(bot: Bot, event: Event) -> bool:
         and (
             imagegen.is_imagegen_request(text)
             or imagegen.is_implicit_imagegen_request(text)
+            or imagegen.is_self_portrait_request(text)
         )
     )
 
@@ -1133,6 +1134,18 @@ imagegen_cmd = on_message(rule=Rule(_imagegen_rule), priority=5, block=True)
 async def handle_imagegen(bot: Bot, event: GroupMessageEvent) -> None:
     """生图指令：显式「@机器人 画一张X」或隐式「你卖萌是什么样子」。"""
     text = event.get_plaintext().strip()
+    # 自画像优先判定：「画我/我的自画像/把我画成Q版」——
+    # 画的是请求者本人（头像锚定），不是机器人自己也不是别的
+    if imagegen.is_self_portrait_request(text):
+        if imagegen.selfportrait_quota_left(event.group_id) <= 0:
+            await imagegen_cmd.finish(
+                f"这个群今天的自画像次数用完了（每天 {cfg.ai_selfportrait_daily_limit} 次），"
+                "明天再来吧——只有我的主人不受这个限制"
+            )
+        await imagegen_cmd.send("好，给你画个 Q 版小人～")
+        if not await imagegen.generate_self_portrait(bot, event):
+            await imagegen_cmd.finish("……这轮自画像没画成，再试一次看看")
+        return
     # 「画一张小猫」→ 话题「小猫」；没说话题就用整句
     topic = text
     for word in imagegen.IMAGEGEN_TRIGGERS:

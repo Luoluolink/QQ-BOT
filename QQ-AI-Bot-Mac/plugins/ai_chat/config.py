@@ -1313,6 +1313,9 @@ class Config(BaseModel):
     # 漫画素材的时间窗（小时）：只从最近 N 小时的聊天里选段，
     # 太老的话题不翻旧账。窗口空了会退用摘要兜底
     ai_comic_material_hours: float = 3.0
+    # 自画像（把请求者的头像画成 Q 版小人）每群每日上限；
+    # 漫画不限次的群同样不限
+    ai_selfportrait_daily_limit: int = 5
 
     @field_validator("ai_comic_unlimited_groups", mode="before")
     @classmethod

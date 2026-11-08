@@ -1277,6 +1277,81 @@ _COMIC_STYLE_REF = (
 _image_api_dead_until = 0.0   # 生图接口 429 额度耗尽后的短路截止时间
 
 
+# ---- 自画像：把请求者的 QQ 头像画成 Q 版小人 ----
+_SELF_PORTRAIT_PAT = re.compile(
+    r"我的?自画像"
+    r"|(把我?|将我)(画|变)(成|成为一?个?|为一?个?)?.{0,8}(Q版|qq版|小人|动漫形象|二次元)"
+    r"|(画|来|整|给我画)(一?张|一?个|下)?我(?![的们])"
+    r"|(帮|给)我?画(个|一张|一下)?我"
+    r"|我自己的?(Q版|小人|动漫形象|头像|照片)"
+    r"|(生成|画|来|整|帮我)(一?张|一?个)?我的?(Q版|小人|动漫形象|头像|照片)"
+)
+
+_sp_inflight: set[int] = set()
+_SP_USAGE_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "data" / "sp_usage.json"
+)
+_sp_usage: dict[str, int] = {}
+_sp_day: str = ""
+
+
+def is_self_portrait_request(text: str) -> bool:
+    """用户想让自己被画成 Q 版小人（头像锚定）。"""
+    return bool(text) and bool(_SELF_PORTRAIT_PAT.search(text))
+
+
+def _load_sp_usage() -> None:
+    global _sp_usage, _sp_day
+    today = date.today().isoformat()
+    if _sp_day == today:
+        return
+    try:
+        raw = json.loads(_SP_USAGE_PATH.read_text(encoding="utf-8"))
+        if isinstance(raw, dict) and raw.get("day") == today:
+            _sp_usage = {
+                k: v for k, v in raw.get("groups", {}).items() if isinstance(v, int)
+            }
+        else:
+            _sp_usage = {}
+        _sp_day = today
+    except (OSError, ValueError):
+        _sp_usage = {}
+        _sp_day = today
+
+
+def _save_sp_usage() -> None:
+    try:
+        _SP_USAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _SP_USAGE_PATH.write_text(
+            json.dumps(
+                {"day": _sp_day, "groups": _sp_usage}, ensure_ascii=False, indent=2
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def selfportrait_quota_left(group_id: int) -> int:
+    if str(group_id) in _unlimited_groups():
+        return 10 ** 9
+    _load_sp_usage()
+    return max(0, cfg.ai_selfportrait_daily_limit - _sp_usage.get(str(group_id), 0))
+
+
+def take_selfportrait_quota(group_id: int) -> bool:
+    if str(group_id) in _unlimited_groups():
+        return True
+    _load_sp_usage()
+    key = str(group_id)
+    if _sp_usage.get(key, 0) >= cfg.ai_selfportrait_daily_limit:
+        return False
+    _sp_usage[key] = _sp_usage.get(key, 0) + 1
+    _save_sp_usage()
+    return True
+
+
 def _style_ref_bytes() -> bytes | None:
     """画风参考图（用户提供的样板漫画）。缺失返回 None，退回纯文字描述。"""
     try:
@@ -1296,6 +1371,116 @@ def _mark_api_dead_if_quota(exc: Exception) -> None:
     text = str(exc)
     if "429" in text or "QUOTA" in text.upper():
         _image_api_dead_until = time.time() + 600
+
+
+async def generate_self_portrait(bot: Bot, event: GroupMessageEvent) -> bool:
+    """把请求者的 QQ 头像画成 Q 版小人（画风锚定同漫画）。
+
+    头像类型分流同漫画：人物/动物当参考图，标志印胸口，其他取配色。
+    失败发一条简短说明（用户主动要求的动作不装死）。
+    """
+    if not cfg.ai_imagegen_enabled or not cfg.ai_imagegen_api_key:
+        return False
+    gid = event.group_id
+    qq = int(event.user_id)
+    if gid in _sp_inflight:
+        return False
+    _sp_inflight.add(gid)
+
+    async def _fail(reason: str) -> bool:
+        try:
+            name = ""
+            try:
+                from . import members as _m  # noqa: PLC0415
+
+                idx = _m._cache.get(gid)
+                if idx:
+                    me = idx.by_qq(qq)
+                    name = me.display if me else ""
+            except Exception:  # noqa: BLE001
+                pass
+            await bot.send(event, Message(f"{name + '，' if name else ''}{reason}"))
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
+    try:
+        if not _take_quota():
+            return await _fail("今天画画的总配额用完了，明天再来吧")
+        avatar_raw = await asyncio.to_thread(_fetch_avatar, str(qq))
+        info = await _classify_avatar(bot, qq)
+        logger.info(
+            f"[ai_chat] 自画像 qq={qq}: 类型 {info.get('type', '失败')}，"
+            f"头像 {'OK' if avatar_raw else '拉取失败'}"
+        )
+        style_bytes = await asyncio.to_thread(_style_ref_bytes)
+        desc = ""
+        colors = str(info.get("colors") or "").strip()
+        vtype = info.get("type", "scene")
+        if vtype in ("character", "animal"):
+            desc = f"这个 Q 版小人必须长成第 2 张头像的样子（{info.get('desc', '')}）"
+        elif vtype == "logo":
+            desc = (
+                f"这个 Q 版小人穿简单的 T 恤/连帽衫，胸口印着「{info.get('desc', '')}」"
+                "标志" + (f"，整体配色：{colors}" if colors else "")
+            )
+        else:
+            desc = f"这个 Q 版小人的配色取自头像（{colors or info.get('desc', '')}）"
+
+        from .ai_client import make_client  # noqa: PLC0415
+
+        client = make_client(cfg.ai_imagegen_api_key, cfg.ai_imagegen_api_base, cfg.ai_proxy)
+        prompt = (
+            "画一个 Q 版小人：单人，大半身或全身，可爱自然的姿势（比如挥手、叉腰、比耶），"
+            "居中构图，贴纸感干净背景。" + desc + "。"
+            + ("第 1 张图是画风参考：只参考画风/配色/质感，忽略其中角色。" if style_bytes else "")
+        )
+        try:
+            if style_bytes:
+                imgs = [("style_ref.png", style_bytes)]
+                if avatar_raw and vtype in ("character", "animal"):
+                    imgs.append((f"{qq}.png", avatar_raw))
+                    prompt += "第 2 张图是这个人的头像——小人的长相必须严格还原它。"
+                resp = await client.images.edit(
+                    model=cfg.ai_imagegen_model,
+                    image=[(fn, io.BytesIO(raw)) for fn, raw in imgs],
+                    prompt=prompt,
+                    size="1024x1024",
+                    quality=cfg.ai_imagegen_comic_quality,
+                    n=1,
+                )
+            else:
+                resp = await client.images.generate(
+                    model=cfg.ai_imagegen_model,
+                    prompt=prompt,
+                    size="1024x1024",
+                    quality=cfg.ai_imagegen_comic_quality,
+                    n=1,
+                )
+            image = _img_bytes(resp.data[0])
+        except Exception as exc:  # noqa: BLE001
+            _mark_api_dead_if_quota(exc)
+            reason = "生图接口额度用完了" if image_api_dead() else "生图接口这会儿不太行"
+            logger.info(f"[ai_chat] 自画像生成失败: {exc!r}")
+            return await _fail(reason)
+
+        if not image:
+            return await _fail("生图接口这会儿不太行")
+        try:
+            await bot.send(
+                event,
+                Message(MessageSegment.image("base64://" + base64.b64encode(image).decode())),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[ai_chat] 自画像发送失败: {exc!r}")
+            return False
+        from . import ambient  # noqa: PLC0415
+
+        ambient.record(gid, "我", f"给群友画了一张 Q 版自画像")
+        logger.info(f"[ai_chat] 自画像已发出（{len(image) // 1024}KB，qq={qq}）")
+        return True
+    finally:
+        _sp_inflight.discard(gid)
 
 
 async def generate_comic_from_chat(bot: Bot, event: GroupMessageEvent) -> bool:
