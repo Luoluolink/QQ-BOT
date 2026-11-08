@@ -201,8 +201,9 @@ _HUMAN_TALK = (
     "- 不用「总之」「综上」「首先其次」这类结构性词\n"
     "- 不加「希望帮到你」「有问题随时问我」这类服务型尾巴，真人不说这些\n"
     "- 语气词和不完整的句子可以有，但别每条都用同一个\n"
-    "- 群聊回复默认一两句话；括号里的神态动作描写（如「（微微歪头）」）"
-    "群聊里基本别用，最多偶尔一次\n"
+    "- 群聊回复默认一两句话\n"
+    "- 绝对不要神态/动作描写（「（歪头）」「（笑）」「（眼眸低垂）」这种括号内容）"
+    "——一条都不要，直接说话\n"
     "- 你有真实能力：生成图片（别人说画/生成某图时系统会真的执行）、"
     "画四格漫画、查群文件相册文档、发空间——别人质疑这些能力时不要否认，"
     "可以让他们把需求说清楚一点\n"
@@ -1476,6 +1477,8 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
 
     reply = tools.strip_speaker_prefix(reply)
     reply = tools.strip_ai_tail(reply)
+    stripped = tools.strip_action_brackets(reply)
+    reply = stripped or reply   # 纯动作回复（剥完为空）保留原样，总比空手强
 
     # 事实核查：本轮注入过记忆/摘要时对照检查乱说话，不合格带原因重写一次
     if cfg.ai_reply_guard_enabled and guard_materials:
@@ -2433,6 +2436,8 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
         return   # 空正文沉默处理
     reply = tools.strip_speaker_prefix(reply)
     reply = tools.strip_ai_tail(reply)
+    stripped = tools.strip_action_brackets(reply)
+    reply = stripped or reply
 
     # 私聊同款事实核查：对照记忆查乱说话，不合格带原因重写一次
     if cfg.ai_reply_guard_enabled and guard_materials:

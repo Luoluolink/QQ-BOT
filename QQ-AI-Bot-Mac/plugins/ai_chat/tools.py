@@ -334,6 +334,20 @@ def humanize_bubble(text: str) -> str:
     return text
 
 
+# 神态/动作括号：（歪头）（笑）（金色的眼眸微微垂下）——角色扮演腔，
+# 群聊里发出来一眼就是扮演程序，整段剥掉
+_ACTION_BRACKET_RE = re.compile(r"[（(][^（）()]{0,30}[）)]")
+
+
+def strip_action_brackets(text: str) -> str:
+    """剥掉回复里的神态/动作括号内容（可多层嵌套连剥）。"""
+    prev = None
+    while prev != text:
+        prev = text
+        text = _ACTION_BRACKET_RE.sub("", text)
+    return re.sub(r"\s{2,}", " ", text).strip()
+
+
 def strip_ai_tail(text: str) -> str:
     """剥掉模型回复结尾的 AI 客套尾巴（最多剥两层）。"""
     for _ in range(2):
