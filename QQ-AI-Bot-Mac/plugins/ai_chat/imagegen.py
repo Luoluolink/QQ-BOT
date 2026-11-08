@@ -111,7 +111,8 @@ _REWRITE_SYSTEM = (
     "3. 严格按下面两行格式输出，不要任何多余内容：\n"
     "   第一行：英文表情描述\n"
     "   第二行：文字:短语（中文 2-6 字，带情绪标点，如 太棒了！/ 哼…/ ？）\n"
-    "4. 内容安全红线：绝不使用 drooling（流口水）、vomiting（呕吐）、blood（血）、\n"
+    "4. 内容安全红线：严格全年龄——不出现任何擦边、性暗示、暴露元素"
+    "（姿势/服装/构图都不行）；绝不使用 drooling（流口水）、vomiting（呕吐）、blood（血）、\n"
     "   injury（受伤）、crying tears of pain（痛哭）等词——生图模型的内容审核会\n"
     "   因此拒画。表达「馋/饿」用 hugging own belly with a happy grin、sparkling\n"
     "   eyes reaching for food 这类安全写法\n"
@@ -350,7 +351,7 @@ _REWRITE_FREE_SYSTEM = (
     "要求：\n"
     "1. 完整描述主体、动作、表情、环境、构图，20-40 个英文词\n"
     "2. 只画用户要求的内容，不要自行添加角色设定\n"
-    "3. 内容必须健康安全：不画血腥、暴力、暴露、歧视、违法内容\n"
+    "3. 内容必须严格全年龄：不画血腥、暴力、暴露、歧视、违法内容，也不画任何擦边、性暗示元素（姿势/服装/构图均含）\n"
     "4. 提示词末尾统一加上画风：anime illustration style, vibrant colors, "
     "clean composition, high detail\n"
     "5. 只输出提示词本身，不要任何解释、前缀、引号\n"
@@ -1432,7 +1433,8 @@ async def generate_self_portrait(bot: Bot, event: GroupMessageEvent) -> bool:
         client = make_client(cfg.ai_imagegen_api_key, cfg.ai_imagegen_api_base, cfg.ai_proxy)
         prompt = (
             "画一个 Q 版小人：单人，大半身或全身，可爱自然的姿势（比如挥手、叉腰、比耶），"
-            "居中构图，贴纸感干净背景。" + desc + "。"
+            "居中构图，贴纸感干净背景，内容严格全年龄（不出现擦边、性暗示、暴露）。"
+            + desc + "。"
             + ("第 1 张图是画风参考：只参考画风/配色/质感，忽略其中角色。" if style_bytes else "")
         )
         try:
