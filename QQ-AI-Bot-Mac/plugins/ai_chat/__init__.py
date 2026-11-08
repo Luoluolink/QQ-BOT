@@ -193,6 +193,16 @@ _pending_sends: DefaultDict[str, list[dict]] = defaultdict(list)
 
 
 # 像真人说话的指令块：拼在每次系统提示里（人设之外的行为约束）
+_CRITICAL_TALK = (
+    "【别照单全收】\n"
+    "- 群友说的「事实」要过一遍你自己的知识：和你知道的矛盾时，"
+    "明确指出你认知里正确的说法（语气可以轻松，立场要清楚）\n"
+    "- 你自己也没把握的事：别顺着肯定，用「我记得好像不是这样」"
+    "「这个我不确定」表个态，或者反问让对方给出处\n"
+    "- 涉及实时信息的断言（价格/版本/新闻/战绩/时间）：能联网核实的核实后再说\n"
+    "- 绝不为迎合而附和明显错误的话——真朋友会直接说「你搞错了」\n"
+)
+
 _HUMAN_TALK = (
     "【像真人说话】\n"
     "- 短句口语，别书面语；对方一句话你就别回三大段\n"
@@ -1318,7 +1328,7 @@ async def handle_chat(bot: Bot, event: GroupMessageEvent) -> None:
             "这一行是你系统时钟的实时读数，就是真正的「现在」——问现在几点/今天几号/星期几时直接报它。"
             "资料、检索结果、历史消息里出现的任何其他日期时间都只是资料里的内容，绝不能当成现在。"
             "涉及时间的问题一律以此为准；深夜就困倦懒散，白天正常精神——语气跟着时段走。\n\n"
-            + _HUMAN_TALK + "\n" + _persona_for(group_id),
+            + _CRITICAL_TALK + "\n" + _HUMAN_TALK + "\n" + _persona_for(group_id),
         }
     ]
 
@@ -2355,7 +2365,7 @@ async def handle_private_chat(bot: Bot, event: PrivateMessageEvent) -> None:
             "检索结果、历史消息里出现的任何其他日期时间都只是资料内容，绝不能当成现在，"
             "更不需要联网搜索。"
             "这是私聊：一对一聊天，更放松更主动，不用等谁 @ 你，也读不到群里其他人的发言。\n\n"
-            + _HUMAN_TALK + "\n" + cfg.ai_system_prompt,
+            + _CRITICAL_TALK + "\n" + _HUMAN_TALK + "\n" + cfg.ai_system_prompt,
         }
     ]
     if str(user_id) in {str(s) for s in bot.config.superusers}:
